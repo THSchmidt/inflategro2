@@ -1,7 +1,7 @@
-#summary A How-To for embedding KcsA (PDB-ID: 1BL8)
+#summary Tutorial for embedding KcsA (PDB-ID: 1BL8)
 
 = Tutorial for embedding KcsA =
-*NOTE:* _This tutorial is for use with GROMACS 4.5.5._
+*NOTE:* _We use GROMACS 4.5.5 for this tutorial._
 
 
 == Protein preparation ==
