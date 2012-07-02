@@ -1,14 +1,19 @@
 #summary A How-To for embedding KcsA (PDB-ID: 1BL8)
 
+= Tutorial for embedding KcsA =
 *NOTE:* _This tutorial is for use with GROMACS 4.5.5._
-Tutorial for embedding KcsA
-= Get the protein =
 
-{{{wget "http://www.pdb.org/pdb/download/downloadFile.do?fileFormat=pdb&compression=NO&structureId=1bl8" -O 1bl8.pdb}}}
 
-# Remove water, potassium ions and the CONECT section.
-gedit 1bl8.pdb
-echo 1 | pdb2gmx -f 1bl8.pdb -o 1bl8.gro -ff gromos53a6 -p kcsa.top -i posre.kcsa
+== Protein preparation ==
+
+Download the protein structure:
+<code language="bash">wget "http://www.pdb.org/pdb/download/downloadFile.do?fileFormat=pdb&compression=NO&structureId=1bl8" -O 1bl8.pdb</code>
+
+Remove water, potassium ions and the CONECT section using your preferred editor:
+<code language="bash">gedit 1bl8.pdb</code>
+
+Transfer the structure to the world of GROMACS:
+<code language="bash">echo 1 | pdb2gmx -f 1bl8.pdb -o 1bl8.gro -ff gromos53a6 -p kcsa.top -i posre.kcsa</code>
 
 touch empty.mdp
 grompp -f empty.mdp -c 1bl8.gro -p kcsa.top -o test.tpr
