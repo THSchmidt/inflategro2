@@ -1,7 +1,7 @@
 #summary Tutorial for embedding LpxR (PDB-ID: 3FID)
 
-= Tutorial for embedding KcsA =
-*NOTE:* _This tutorial is for use with GROMACS 4.5.5._
+= Tutorial for embedding LpxR =
+*NOTE:* _We use GROMACS 4.5.5 for this tutorial._
 
 
 == Protein preparation ==
