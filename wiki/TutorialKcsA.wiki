@@ -3,10 +3,14 @@
 = Tutorial for embedding KcsA =
 *NOTE:* _We use GROMACS 4.5.5 for this tutorial._
 
+The potassium channel KcsA is a conical shaped transmembrane protein.
+This has the effect that the number of lipid molecules that have to be removed during the embedding procedure to preserve correct lipid densities, is different for each leaflet.
+
 
 == Protein preparation ==
 
-Download the protein structure:
+MD simulation works only if the protein structure is complete.
+Since the structure of our target protein (PDB-ID: [http://www.rcsb.org/pdb/explore/explore.do?structureId=1bl8 1BL8]) includes missing atoms we have to download the structure from another source: the OPM database (Orientations of Proteins in Membranes).
 <code language="bash">wget "http://www.pdb.org/pdb/download/downloadFile.do?fileFormat=pdb&compression=NO&structureId=1bl8" -O 1bl8.pdb</code>
 
 Remove water, potassium ions and the CONECT section using your preferred editor:
