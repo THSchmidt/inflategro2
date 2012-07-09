@@ -57,34 +57,71 @@ touch empty.mdp
 grompp -f empty.mdp -c 1bl8.gro -p kcsa.top -o test.tpr</code>
 
 
+
+== Protein orientation ==
+
 *Orient* the protein using LAMBADA
 <code language="bash">
 ~/lib/lambada/lambada_rc1/lambada -f1 kcsa.gro -f2 membrane.gro</code>
 The combined model of protein and membrane is stored in the output file {{{prot_memb.gro}}}.
 
 
+
 == Protein embedding ==
 
-We use InflateGRO2 for embedding the protein in the membrane.
-This needs several preparation steps:
+We use InflateGRO2 for *embedding* the protein in the membrane.
+Since the membrane water molecules may disturb the embedding procedure, remove the water:
+<code language="bash">
+echo q | make_ndx -f prot_memb.gro -o prot_memb.ndx
+echo 17 | editconf -f prot_memb.gro -n prot_memb.ndx -o  prot_memb.nowater.gro</code>
 
 
-
-# Remove water molecules.
-gedit delwater.make_ndx.answers
-make_ndx -f ../pope-popc/pope-popc.17x17.gro -o pope-popc.17x17.withwater.ndx <delwater.make_ndx.answers
-echo 7 | editconf -f ../pope-popc/pope-popc.17x17.gro -n pope-popc.17x17.ndx -o pope-popc.17x17.gro
-echo q | make_ndx -f pope-popc.17x17.gro -o pope-popc.17x17.ndx
-
-
+Copy the needed lipid ITP files and complete the topology by adding the lipids:
+<code language="bash">
 cp ../pope-popc/*.itp .
-gedit kcsa.top
-cp ~/lib/inflategro/inflategro2b9/deflate.mdp .
-# Combine for InflateGRO2 both lipid types to one group (14 | 15).
-gedit make_ndx.answers
-make_ndx -f protein_pope-popc.gro -o protein_pope-popc.ndx <make_ndx.answers
-cp ~/lib/inflategro/inflategro2b9/deflate.mdp .
+gedit kcsa.top</code>
 
-# Before executing InflateGRO2 with its internal defalting routine, you should check if your topology is compatible with coordinates, by using grompp.
 
-~/lib/inflategro/inflategro2b9/inflategro2 -f protein_pope-popc.gro -n protein_pope-popc.ndx -p kcsa.top -m deflate.mdp -v
+Copy the MDP file supplied with InflateGRO2:
+<code language="bash">
+cp ~/lib/inflategro/inflategro2b9/deflate.mdp .</code>
+
+
+Generate the group for inflating by combining both lipid types to one NDX group (group 13 = POPE, group 14 = POPC):
+<code language="bash">
+echo -e "13|14\nq" | make_ndx -f prot_memb.nowater.gro -o prot_memb.nowater.ndx</code>
+
+
+To prevent surprises by running InflateGRO2's internal deflating routine, you should check the compatibility of the topology and coordinates:
+<code language="bash">
+grompp -f empty.mdp -c prot_memb.nowater.gro -p kcsa.top -o test2.tpr</code>
+Errors might occur by having wrong numbers of atoms in the system.
+
+
+If everything seems working well run InflateGRO2:
+<code language="bash">
+~/lib/inflategro/inflategro2b9/inflategro2 -f prot_memb.nowater.gro -n prot_memb.nowater.ndx -p kcsa.top -m deflate.mdp -v</code>
+
+
+Since InflateGRO2 switches off interactions of lipid molecules that do not overlap with the protein with any other system component, a final energy minimization step has to be executed, where each molecule can interact with any other molecule.
+<code language="bash">
+Add: ENERGY MINIMIZATION</code>
+
+
+
+== Solvating the system ==
+
+For biomolecular systems the typical solvent is water.
+Use the GROMACS tool {{{genbox}}} to add it to your system:
+<code language="bash">
+genbox -cp embedded.gro -cs -p kcsa.top -o kcsa.inwater.gro</code>
+
+
+Mimicking the intra-cellular environment, ions have to be added in a physiological relevant concentration:
+<code language="bash">
+touch empty.mdp
+grompp -f empty.mdp -c kcsa.inwater.gro -p kcsa.top -o kcsa.inwater.tpr
+genion -f kcsa.inwater.tpr -p kcsa.top -o kcsa.withions.gro</code>
+
+
+== Membrane equilibration ==
