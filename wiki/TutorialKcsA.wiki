@@ -44,7 +44,8 @@ echo "1 1" | editconf -f 1r3j.pdb -n 1r3j.ndx -o kcsa.pdb -d 2</code>
 
 
 *Convert* the structure to the world of GROMACS:
-<code language="bash">echo 1 | pdb2gmx -f kcsa.pdb -p kcsa.top -i posre.kcsa -o kcsa.gro -ff gromos53a6 -missing
+<code language="bash">
+echo 1 | pdb2gmx -f kcsa.pdb -p kcsa.top -i posre.kcsa -o kcsa.gro -ff gromos53a6 -missing
 editconf -f kcsa.gro -o protein.gro -d 2</code>
 For this tutorial we need to allow missing atoms using the {{{-missing}}} parameter.
 
