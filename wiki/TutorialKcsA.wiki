@@ -49,7 +49,7 @@ echo 1 | pdb2gmx -f kcsa.pdb -p kcsa.top -i posre.kcsa -o kcsa.gro -ff gromos53a
 editconf -f kcsa.gro -o protein.gro -d 2</code>
 For this tutorial we need to allow missing atoms using the {{{-missing}}} parameter.
 
-*NOTE:* MD simulation works only if the protein structure is complete. This structure is not. For a real setup you have to do additional steps to complete the structure (see the [http://www.gromacs.org/Documentation/Errors#WARNING.3a_atom_X_is_missing_in_residue_XXX_Y_in_the_pdb_file GROMACS help] for this).
+*NOTE:* MD simulations work only if the protein structure is complete. This structure of KcsA is not. For a real setup you have to do additional steps to complete the structure (see the [http://www.gromacs.org/Documentation/Errors#WARNING.3a_atom_X_is_missing_in_residue_XXX_Y_in_the_pdb_file GROMACS help] for this).
 
 *Test* the generated system topology
 <code language="bash">
@@ -60,11 +60,13 @@ grompp -f empty.mdp -c 1bl8.gro -p kcsa.top -o test.tpr</code>
 *Orient* the protein using LAMBADA
 <code language="bash">
 ~/lib/lambada/lambada_rc1/lambada -f1 kcsa.gro -f2 membrane.gro</code>
+The combined model of protein and membrane is stored in the output file {{{prot_memb.gro}}}.
 
 
 == Protein embedding ==
 
-
+We use InflateGRO2 for embedding the protein in the membrane.
+This needs several preparation steps:
 
 
 
