@@ -44,19 +44,26 @@ echo "1 1" | editconf -f 1r3j.pdb -n 1r3j.ndx -o kcsa.pdb -d 2</code>
 
 
 *Convert* the structure to the world of GROMACS:
-<code language="bash">echo 1 | pdb2gmx -f kcsa.pdb -p kcsa.top -i posre.kcsa -o kcsa.gro -ff gromos53a6 -missing</code>
+<code language="bash">echo 1 | pdb2gmx -f kcsa.pdb -p kcsa.top -i posre.kcsa -o kcsa.gro -ff gromos53a6 -missing
+editconf -f kcsa.gro -o protein.gro -d 2</code>
 For this tutorial we need to allow missing atoms using the {{{-missing}}} parameter.
-
 
 *NOTE:* MD simulation works only if the protein structure is complete. This structure is not. For a real setup you have to do additional steps to complete the structure (see the [http://www.gromacs.org/Documentation/Errors#WARNING.3a_atom_X_is_missing_in_residue_XXX_Y_in_the_pdb_file GROMACS help] for this).
 
+*Test* the generated system topology
+<code language="bash">
 touch empty.mdp
-grompp -f empty.mdp -c 1bl8.gro -p kcsa.top -o test.tpr
+grompp -f empty.mdp -c 1bl8.gro -p kcsa.top -o test.tpr</code>
 
-editconf -f 1bl8.gro -o protein.gro -d 2
-echo q | make_ndx -f protein.gro -o protein.ndx
 
-~/lib/lambada/lambada_beta3/lambada --iprot protein.gro --ipndx protein.ndx --imemb pope-popc.17x17.gro --imndx pope-popc.17x17.ndx --ogro protein_pope-popc.gro --orient
+*Orient* the protein using LAMBADA
+<code language="bash">
+~/lib/lambada/lambada_rc1/lambada -f1 kcsa.gro -f2 membrane.gro</code>
+
+
+== Protein embedding ==
+
+
 
 
 
