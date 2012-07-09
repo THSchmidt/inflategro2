@@ -1,23 +1,54 @@
 #summary Tutorial for embedding KcsA (PDB-ID: 1R3J)
 
 = Tutorial for embedding KcsA =
-*NOTE:* _We use GROMACS 4.5.5 for this tutorial._
 
-The potassium channel KcsA is a conical shaped transmembrane protein.
-This has the effect that the number of lipid molecules that have to be removed during the embedding procedure to preserve correct lipid densities, is different for each leaflet.
+KcsA is a transmembrane pore-forming channel, selective for potassium ions.
+We have chosen it for this tutorial because of its conical transmembrane shape, representing special advantages for the protein embedding procedure:
+to preserve correct lipid densities in both leaflet, a different number of lipids have to be removed.
 
+<wiki:toc max_depth="2" />
+
+----
+
+== System requirements ==
+
+For executing this tutorial one-to-one you need the following system configuration:
+ * *Internet access*
+ * *Linux* and a *Linux-Shell*, e.g. _Ubuntu Linux_ & {{{bash}}}
+ * any *text editor*, e.g. {{{gedit}}}
+ * *wget* (typically part of Linux)
+ * *gunzip* (typically part of Linux)
+ * the *sed* stream editor (typically part of Linux)
+ * the *GROMACS 4.5.5* MD package
+ * *LAMBADA* for membrane protein orientation and
+ * *InflateGRO2* for protein embedding
+
+----
 
 == Protein preparation ==
 
-MD simulation works only if the protein structure is complete.
-Since the structure of our target protein (PDB-ID: [http://www.rcsb.org/pdb/explore/explore.do?structureId=1r3j 1R3J]) includes missing atoms we have to download the structure from another source: the OPM database (Orientations of Proteins in Membranes).
-<code language="bash">wget "http://www.pdb.org/pdb/download/downloadFile.do?fileFormat=pdb&compression=NO&structureId=1bl8" -O 1bl8.pdb</code>
+*Download* the protein structure from the RCSB Protein Databank (PDB).
+Since we want to simulate the protein in its physiological relevant tetrameric structure, we have to download the biological assembly:
+<code language="bash">
+wget "http://www.rcsb.org/pdb/files/1R3J.pdb1.gz"</code>
 
-Remove water, potassium ions and the CONECT section using your preferred editor:
-<code language="bash">gedit 1bl8.pdb</code>
+*Unpack* this archive and combine the subunits to one structure:
+<code language="bash">
+gunzip 1R3J.pdb1.gz
+sed -e 's/ENDMDL.*//g;s/MODEL.*//g;/^$/d' <1R3J.pdb1 >1r3j.pdb</code>
 
-Transfer the structure to the world of GROMACS:
-<code language="bash">echo 1 | pdb2gmx -f 1bl8.pdb -o 1bl8.gro -ff gromos53a6 -p kcsa.top -i posre.kcsa</code>
+*Extract* the protein and adjust the box dimensions:
+<code language="bash">
+echo q | make_ndx -f 1r3j.pdb -o 1r3j.ndx
+echo "1 1" | editconf -f 1r3j.pdb -n 1r3j.ndx -o kcsa.pdb -d 2</code>
+
+
+*Convert* the structure to the world of GROMACS:
+<code language="bash">echo 1 | pdb2gmx -f kcsa.pdb -p kcsa.top -i posre.kcsa -o kcsa.gro -ff gromos53a6 -missing</code>
+For this tutorial we need to allow missing atoms using the {{{-missing}}} parameter.
+
+
+*NOTE:* MD simulation works only if the protein structure is complete. This structure is not. For a real setup you have to do additional steps to complete the structure (see the [http://www.gromacs.org/Documentation/Errors#WARNING.3a_atom_X_is_missing_in_residue_XXX_Y_in_the_pdb_file GROMACS help] for this).
 
 touch empty.mdp
 grompp -f empty.mdp -c 1bl8.gro -p kcsa.top -o test.tpr
