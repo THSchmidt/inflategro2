@@ -58,7 +58,7 @@ grompp -f empty.mdp -c 1bl8.gro -p kcsa.top -o test.tpr</code>
 
 
 
-== Protein orientation ==
+== Protein orientation & membrane alignment ==
 
 *Orient* the protein using LAMBADA
 <code language="bash">
