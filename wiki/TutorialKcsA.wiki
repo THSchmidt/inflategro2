@@ -98,7 +98,7 @@ grompp -f empty.mdp -c prot_memb.nowater.gro -p kcsa.top -o test2.tpr</code>
 Errors might occur by having wrong numbers of atoms in the system.
 
 
-If everything seems working well run InflateGRO2:
+If everything seems to work well run InflateGRO2:
 <code language="bash">
 ~/lib/inflategro/inflategro2b9/inflategro2 -f prot_memb.nowater.gro -n prot_memb.nowater.ndx -p kcsa.top -m deflate.mdp -v</code>
 
