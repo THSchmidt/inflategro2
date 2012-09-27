@@ -1,0 +1,127 @@
+title                    = Steepest descent energy minimization using static and dynamic groups for InflateGRO2.
+
+; The following lines tell the program the standard locations where to find certain files
+cpp                      = cpp          ; Preprocessor
+include                  = -I../top     ;Directories to include in the topology format
+;define                   = -DPOSRES     ; Apply position restraints. 
+
+
+
+; RUN CONTROL PARAMETERS
+integrator               = steep
+; Start time and timestep in ps
+tinit                    = 0
+dt                       = 0.002
+nsteps                   = 80
+; For exact run continuation or redoing part of a run
+init_step                = 0
+; Mode for center of mass motion removal
+comm-mode                = Linear
+; number of steps for center of mass motion removal
+nstcomm                  = 1
+; group(s) for center of mass motion removal
+comm-grps                =
+
+
+
+; ENERGY MINIMIZATION OPTIONS
+; Force tolerance and initial step-size
+emtol                    = 1000
+emstep                   = 0.01
+; Max number of iterations in relax_shells
+niter                    = 0
+; Step size (1/ps^2) for minimization of flexible constraints
+fcstep                   = 0
+
+
+
+; OUTPUT CONTROL OPTIONS
+; Output frequency for coords (x), velocities (v) and forces (f)
+nstxout                  = 25000
+nstvout                  = 25000
+nstfout                  = 0
+; Checkpointing helps you continue after crashes
+nstcheckpoint            = 25000
+; Output frequency for energies to log file and energy file
+nstlog                   = 2500
+nstenergy                = 2500
+; Output frequency and precision for xtc file
+nstxtcout                = 1000
+xtc-precision            = 1000
+; This selects the subset of atoms for the xtc file. You can
+; select multiple groups. By default all atoms will be written.
+xtc-grps                 =
+; Selection of energy groups
+energygrps               = Protein Dynamic Static
+energygrp_excl           = Protein Protein Static Static Dynamic Static Protein Static
+freezegrps               = Protein Static
+freezedim                = Y Y Y Y Y Y
+
+
+; NEIGHBORSEARCHING PARAMETERS
+; nblist update frequency
+nstlist                  = 10
+; ns algorithm (simple or grid)
+ns_type                  = grid
+; Periodic boundary conditions: xyz (default), no (vacuum)
+; or full (infinite systems only)
+pbc                      = xyz
+; nblist cut-off
+rlist                    = 1.0
+domain-decomposition     = no
+
+
+
+; OPTIONS FOR ELECTROSTATICS AND VDW
+; Method for doing electrostatics
+coulombtype              = cut-off
+rcoulomb-switch          = 0
+rcoulomb                 = 1.0
+; Dielectric constant (DC) for cut-off or DC of reaction field
+epsilon-r                = 1
+; Method for doing Van der Waals
+vdw-type                 = Cut-off
+; cut-off lengths
+rvdw-switch              = 0
+rvdw                     = 1.4
+; Apply long range dispersion corrections for Energy and Pressure
+DispCorr                 = No
+; Extension of the potential lookup tables beyond the cut-off
+table-extension          = 1
+; Spacing for the PME/PPPM FFT grid
+fourierspacing           = 0.12
+; FFT grid size, when a value is 0 fourierspacing will be used
+fourier_nx               = 0
+fourier_ny               = 0
+fourier_nz               = 0
+; EWALD/PME/PPPM parameters
+pme_order                = 4
+ewald_rtol               = 1e-05
+ewald_geometry           = 3d
+epsilon_surface          = 0
+optimize_fft             = yes
+
+
+
+; OPTIONS FOR BONDS
+constraints              = all-bonds
+; Type of constraint algorithm
+constraint-algorithm     = Lincs
+; Do not constrain the start configuration
+unconstrained-start      = yes
+; Use successive overrelaxation to reduce the number of shake iterations
+Shake-SOR                = no
+; Relative tolerance of shake
+shake-tol                = 1e-04
+; Highest order in the expansion of the constraint coupling matrix
+lincs-order              = 4
+; Number of iterations in the final step of LINCS. 1 is fine for
+; normal simulations, but use 2 to conserve energy in NVE runs.
+; For energy minimization with constraints it should be 4 to 8.
+lincs-iter               = 4
+; Lincs will write a warning to the stderr if in one step a bond
+; rotates over more degrees than
+lincs-warnangle          = 90
+; Convert harmonic bonds to morse potentials
+morse                    = no
+
