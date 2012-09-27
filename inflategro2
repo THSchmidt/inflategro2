@@ -1,0 +1,2419 @@
+#!/usr/bin/perl -w
+
+# Copyright 2012 Thomas H. Schmidt & Christian Kandt
+#
+# This file is part of InflateGRO2.
+#
+# InflateGRO2 is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# any later version.
+#
+# InflateGRO2 is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with InflateGRO2; if not, write to the Free Software Foundation, Inc.,
+# 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+
+
+### Load Packages ##############################################################
+use strict;
+use Cwd;
+use Math::Trig;
+use IO::Handle;
+use FindBin qw($Bin); # Absolute path to THIS script.
+use File::Copy; # Only needed for topology update (backup file).
+use Fcntl;
+autoflush STDOUT 1; # For direct output.
+################################################################################
+
+
+
+### Default Parameters #########################################################
+our $version        = "rc1";              # Version number.
+our $year           = "2012";             # Year (of change).
+
+our $verbose        = 0;                  # Be loud and noisy (and global); default: silent.
+
+my $coordFile       = 'system.gro';       # Structure input file.
+my $topFile         = '';                 # Topology file for update.
+my $ndxInFile       = 'index.ndx';        # Input index file.
+my $mdpFile         = 'deflate.mdp';      # grompp input file with MD parameters.
+my $aplOutFile      = 'areaperlipid.dat'; # 'Area per lipid' output file.
+my $outFile         = 'inflated.gro';     # Structure output file.
+my $lipidFilledCav  = 0;                  # Fill up protein internal cavities with lipids (if 1).
+my $lipidResname    = '';                 # Residue name of the lipids (optional; regex).
+my $gridDelta       = 0.01;               # Grid size to detect the area of the protein [nm].
+my $extCavDetection = 0;                  # Switch on the extended cavity detection.
+my $suCavityDetect  = 0;                  # Cavity detection based on subunit connections.
+my $noDeflating     = 0;                  # Switch off the automatic shrinking after inflating.
+my $nDeflatingSteps = 20;                 # The number of steps for shrinking back.
+my $clearGroups     = 0;                  # Define NDX groups for deleting atoms.
+
+my %refAtomNames = ('lipid'   => '^\s*P',
+                    'protein' => '^\s*(CA|BB)');
+################################################################################
+
+
+
+### Internal variables #########################################################
+my $GMXLIB = qx(echo \$GMXLIB);
+chomp($GMXLIB);
+$GMXLIB = "/usr/share/gromacs/top" unless ($GMXLIB =~ /./);
+
+my %coordData; # Filled by "GROFiles::readGro(...)".
+my @ndxData;   # Filled by "NDXFiles::readNdx(...)".
+my %topData;   # Filled by "TOPFiles::readTop(...)".
+
+my @inflGroupIds;
+my @protGroupIds;
+my @suGroupIds;
+my @clearGroupIds;
+
+my @gridAProt;
+my @gridACav;
+
+my @lipidData;
+
+my @groupInflatingFactors;
+my @groupDeflatingFactors;
+my @groupCavAtomInflVectors;
+
+my %delResnames;
+
+my %areaPerLipid;
+################################################################################
+
+
+
+### Print out program headlines ################################################
+printHead();
+################################################################################
+
+
+
+### Commandline parameters #####################################################
+my %cmdLParam = ('f'          => \$coordFile,
+                 'p'          => \$topFile,
+                 'n'          => \$ndxInFile,
+                 'm'          => \$mdpFile,
+                 'o'          => \$outFile,
+                 'oapl'       => \$aplOutFile,
+                 'lrname'     => \$lipidResname,
+                 'prefname'   => \$refAtomNames{'protein'},
+                 'lrefname'   => \$refAtomNames{'lipid'},
+                 'g'          => \$gridDelta,
+                 'lipcav=f'   => \$lipidFilledCav,
+                 'ecavd=f'    => \$extCavDetection,
+                 'sucav=f'    => \$suCavityDetect,
+                 'nodefl=f'   => \$noDeflating,
+                 'dsteps'     => \$nDeflatingSteps,
+                 'clear=f'    => \$clearGroups,
+                 'v=f'        => \$verbose,
+                 'copyright=f'=> \&printCopyright,
+                 'NOPARAM'    => \&printHelp,
+                 'UNKNOWN'    => \&printHelp,
+                 'help=f'     => \&printHelp,
+                 '?=f'        => \&printHelp,
+                 'h=f'        => \&printHelp);
+cmdlineParser(\%cmdLParam);
+################################################################################
+
+
+
+### Read the GRO file ##########################################################
+%coordData = GROFiles::readGro($coordFile); # Read input GRO file.
+################################################################################
+
+
+
+### Read the NDX file ##########################################################
+if ($lipidResname) {
+    $inflGroupIds[0]          = 1;
+    $protGroupIds[0]          = 2;
+    $ndxData[1]{'groupName'}  = $lipidResname;
+    $ndxData[1]{'atoms'}      = getAtomIdList($coordData{'atoms'}, 'resName', $lipidResname);
+    $ndxData[2]{'atoms'}      = getAtomIdList($coordData{'atoms'}, 'resName', "([^(SOL)|($lipidResname)])");
+}
+elsif ($ndxInFile) {
+    @ndxData = NDXFiles::readNdx($ndxInFile); # Read input NDX file.
+    NDXFiles::printNdxGroups(@ndxData);
+
+    @inflGroupIds = selectGroupIds(\@ndxData, 'inflating');
+    @protGroupIds = selectGroupIds(\@ndxData, 'protein', 1); # Select only one group as protein.
+    @suGroupIds   = selectGroupIds(\@ndxData, 'protein subunits') if $suCavityDetect;
+
+    if ($clearGroups) {
+        @clearGroupIds = selectGroupIds(\@ndxData, 'deletion');
+        foreach (@clearGroupIds) {
+            for (my $i=0; $i<@{$ndxData[$_]{'atoms'}}; $i++) {
+                undef($coordData{'atoms'}[$ndxData[$_]{'atoms'}[$i]]) if $coordData{'atoms'}[$ndxData[$_]{'atoms'}[$i]];
+            }
+        }
+    }
+}
+else {
+    printHelp();
+}
+my $protGroupId = $protGroupIds[0]; # Only one group can be defined as protein.
+################################################################################
+
+my @cavGeoCenterXy;
+
+### Basic analysis #############################################################
+foreach (@inflGroupIds) {
+    printf("\n  ---------------------------------\n  Analyze group \"%s\" (ID=%d)...\r", $ndxData[$_]{'groupName'}, $_);
+
+    ### Basic analysis of the bilayer ##########################################
+    %{$lipidData[$_]} = Lipid::analyzeBilayer($ndxData[$_]{'atoms'}, $coordData{'atoms'}, $refAtomNames{'lipid'});
+    printf("\n    Upper leaflet: %d lipids\n    Lower leaflet: %d lipids\n",
+            $lipidData[$_]{'leaflets'}{'upper'}{'nLipids'},
+            $lipidData[$_]{'leaflets'}{'lower'}{'nLipids'}) if $verbose;
+    ############################################################################
+
+
+    ### Determine the XY area occupied by protein ##############################
+    printf("    Detecting protein area (upper leaflet)...\n") if $verbose;
+    my @tmpArray;
+
+    @tmpArray = Protein::analyzeProtein(\@ndxData,
+                                        $protGroupId,
+                                        \@suGroupIds,
+                                        $coordData{'atoms'},
+                                        $coordData{'box'},
+                                        $gridDelta,
+                                        ($lipidData[$_]{'leaflets'}{'upper'}{'headCooZAvg'} - 0.5),
+                                        ($lipidData[$_]{'leaflets'}{'upper'}{'headCooZAvg'} + 0.5),
+                                        $extCavDetection,
+                                        $ndxData[$_]{'groupName'} . ".upper.xy");
+    $gridAProt[$_]{'upper'} = $tmpArray[0];
+    $gridACav[$_]{'upper'}  = $tmpArray[1];
+    $gridAProt[$_]{'upper'} += $gridACav[$_]{'upper'} unless $lipidFilledCav; # If the detected cavity is empty (not lipid-filled), the excluded area for lipid packing is AProtein + ALipid.
+
+    printf("      Detected area excludable for lipid packing: %7.4f nm^2\n", $gridAProt[$_]{'upper'}) if $verbose;
+
+    if ($lipidFilledCav) { # Calculate the geometrical XY center of the cavity (upper leaflet).
+        my $tmpCounter = 0;
+        for (my $x=0; $x<=@{$tmpArray[2]}; $x++) {
+            next unless ${$tmpArray[2]}[$x];
+            print "$x\r";
+            for (my $y=0; $y<=@{$tmpArray[2][$x]}; $y++) {
+                next unless ${$tmpArray[2]}[$x][$y];
+                next unless ${$tmpArray[2]}[$x][$y] == 2; # Next loop if this grid point is not defined as cavity.
+                $cavGeoCenterXy[$_]{'upper'}{'cooX'} += $x * $gridDelta;
+                $cavGeoCenterXy[$_]{'upper'}{'cooY'} += $y * $gridDelta;
+                $tmpCounter++;
+            }
+        }
+        $cavGeoCenterXy[$_]{'upper'}{'cooX'} /= $tmpCounter;
+        $cavGeoCenterXy[$_]{'upper'}{'cooY'} /= $tmpCounter;
+        $cavGeoCenterXy[$_]{'upper'}{'cooZ'} = $lipidData[$_]{'leaflets'}{'upper'}{'headCooZAvg'};
+    }
+
+
+    printf("    Detecting protein area (lower leaflet)...\n") if $verbose;
+    @tmpArray = Protein::analyzeProtein(\@ndxData,
+                                        $protGroupId,
+                                        \@suGroupIds,
+                                        $coordData{'atoms'},
+                                        $coordData{'box'},
+                                        $gridDelta,
+                                        ($lipidData[$_]{'leaflets'}{'lower'}{'headCooZAvg'} - 0.5),
+                                        ($lipidData[$_]{'leaflets'}{'lower'}{'headCooZAvg'} + 0.5),
+                                        $extCavDetection,
+                                        $ndxData[$_]{'groupName'} . ".lower.xy");
+    $gridAProt[$_]{'lower'} = $tmpArray[0];
+    $gridACav[$_]{'lower'}  = $tmpArray[1];
+    $gridAProt[$_]{'lower'} += $gridACav[$_]{'lower'} unless $lipidFilledCav;
+
+    printf("      Detected area excludable for lipid packing: %7.4f nm^2\n", $gridAProt[$_]{'lower'}) if $verbose;
+
+    if ($lipidFilledCav) { # Calculate the geometrical XY center of the cavity (lower leaflet).
+        my $tmpCounter = 0;
+        for (my $x=0; $x<=@{$tmpArray[2]}; $x++) {
+            next unless ${$tmpArray[2]}[$x];
+
+            for (my $y=0; $y<=@{$tmpArray[2][$x]}; $y++) {
+                next unless ${$tmpArray[2]}[$x][$y];
+                next unless ${$tmpArray[2]}[$x][$y] == 2; # Next loop if this grid point is not defined as cavity.
+                $cavGeoCenterXy[$_]{'lower'}{'cooX'} += $x * $gridDelta;
+                $cavGeoCenterXy[$_]{'lower'}{'cooY'} += $y * $gridDelta;
+                $tmpCounter++;
+            }
+        }
+        $cavGeoCenterXy[$_]{'lower'}{'cooX'} /= $tmpCounter;
+        $cavGeoCenterXy[$_]{'lower'}{'cooY'} /= $tmpCounter;
+        $cavGeoCenterXy[$_]{'lower'}{'cooZ'} = $lipidData[$_]{'leaflets'}{'lower'}{'headCooZAvg'};
+    }
+    ############################################################################
+
+    printf("  Analyze group \"%s\" (ID=%d): Finished\n", $ndxData[$_]{'groupName'}, $_) unless $verbose;
+    print "  ---------------------------------\n\n";
+}
+################################################################################
+
+
+
+### Get protein - lipid overlaps ###############################################
+my @resOverlapScore;
+my @resCavityScore;
+my @resOverlapList;
+my @resCavityList;
+my @gridSlices;
+
+foreach (@inflGroupIds) {
+    my $zSlice = 0.5; # A z-slice with a width of 0.5 nm give good results.
+
+    for (my $zSliceMin=$lipidData[$_]{'zMin'}; $zSliceMin<=$lipidData[$_]{'zMax'}; $zSliceMin+=$zSlice) {
+        ### Get the protein grid of the current z-slice ########################
+        my $zSliceMax = $zSliceMin + $zSlice - 0.001; # Three numbers behind the point (GRO file accuracy).
+        my $zSliceStr = $zSliceMin . "-" . $zSliceMax;
+        print "    Running through the z-slice (range $zSliceStr)\n";
+
+        my @tmpArray = Protein::analyzeProtein(\@ndxData,
+                                               $protGroupId,
+                                               \@suGroupIds,
+                                               $coordData{'atoms'},
+                                               $coordData{'box'},
+                                               $gridDelta,
+                                               $zSliceMin,
+                                               $zSliceMax,
+                                               $extCavDetection,
+                                               $ndxData[$_]{'groupName'} . ".zslice_$zSliceStr.xy");
+        $gridSlices[$_]{$zSliceStr} = $tmpArray[2];
+        ########################################################################
+
+        getOverlaps($gridSlices[$_]{$zSliceStr},
+                    $ndxData[$_]{'atoms'},
+                    $coordData{'atoms'},
+                    $zSliceMax,
+                    $zSliceMin,
+                    \@{$resOverlapScore[$_]},
+                    \@{$resCavityScore[$_]},
+                    $lipidFilledCav);
+    }
+#    overlapScore2PdbBeta("ols2beta.pdb", \%coordData, $resOverlapScore[$_]);
+
+    my @resOverlapScoreSorted = sortResOverlaps($resOverlapScore[$_]);
+    my @resCavityScoreSorted  = sortResOverlaps($resCavityScore[$_]);
+
+
+    ### Part the detected lipids to their leaflets #############################
+    foreach my $item (@resOverlapScoreSorted) {
+        if ($lipidData[$_]{'leaflets'}{'upper'}{'uResIds'}[ $$item{'uResId'} ]) {
+            push(@{$resOverlapList[$_]{'upper'}}, $$item{'uResId'});
+        }
+        elsif ($lipidData[$_]{'leaflets'}{'lower'}{'uResIds'}[ $$item{'uResId'} ]) {
+            push(@{$resOverlapList[$_]{'lower'}}, $$item{'uResId'});
+        }
+    }
+
+    foreach my $item (@resCavityScoreSorted) { # Cavity lipids.
+        if ($lipidData[$_]{'leaflets'}{'upper'}{'uResIds'}[ $$item{'uResId'} ]) {
+            push(@{$resCavityList[$_]{'upper'}}, $$item{'uResId'});
+        }
+        elsif ($lipidData[$_]{'leaflets'}{'lower'}{'uResIds'}[ $$item{'uResId'} ]) {
+            push(@{$resCavityList[$_]{'lower'}}, $$item{'uResId'});
+        }
+    }
+    ############################################################################
+}
+################################################################################
+
+
+
+my @uResIdAtomIdList = uResId2AtomIdList($coordData{'atoms'}); # Get the atom IDs of the overlapping residues.
+my %protGeoCenter;
+my @resGeoCenter;
+my @inflAtomList; # Dynamic components of each group (lipids for inflating).
+my @statAtomList; # Static components of each group.
+my @cavAtomList;  # Cavity components of each group.
+
+my @nLipidCav;
+my @nLipidDel;
+
+my %statNdxGroup = ('groupName' => "Static");
+my %dynaNdxGroup = ('groupName' => "Dynamic");
+my %cavNdxGroup  = ('groupName' => "Cavity");
+
+%protGeoCenter = getGeoCenterXY($ndxData[$protGroupId]{'atoms'}, $coordData{'atoms'});
+
+foreach (@inflGroupIds) {
+    my %cavRes;
+    my %delRes;
+
+    ### Cavity lipid part ######################################################
+    if ($lipidFilledCav) {
+        $nLipidCav[$_]{'upper'} = getnLipPerArea($gridACav[$_]{'upper'}, $coordData{'box'}, $lipidData[$_]{'leaflets'}{'upper'}{'nLipids'});
+        $nLipidCav[$_]{'lower'} = getnLipPerArea($gridACav[$_]{'lower'}, $coordData{'box'}, $lipidData[$_]{'leaflets'}{'lower'}{'nLipids'});
+        print "Upper leaflet: $nLipidCav[$_]{'upper'} ($gridAProt[$_]{'upper'}); Lower leaflet: $nLipidCav[$_]{'lower'} ($gridAProt[$_]{'lower'})\n";
+        print "Upper leaflet: " . int($nLipidCav[$_]{'upper'}) . "; Lower leaflet: " . int($nLipidCav[$_]{'lower'}) . "\n";
+
+        print "Cavity lipids in the upper leaflet:\n";
+        for (my $i=0; $i<int($nLipidCav[$_]{'upper'}); $i++) {
+            print " " . $resCavityList[$_]{'upper'}[$i];
+            $cavRes{'upper'}[$resCavityList[$_]{'upper'}[$i]] = 1;
+        }
+        print "\n";
+
+        print "Cavity lipids in the lower leaflet:\n";
+        for (my $i=0; $i<int($nLipidCav[$_]{'lower'}); $i++) {
+            print " " . $resCavityList[$_]{'lower'}[$i];
+            $cavRes{'lower'}[$resCavityList[$_]{'lower'}[$i]] = 1;
+        }
+        print "\n";
+    }
+    ############################################################################
+
+
+    ### Delete residues ########################################################
+    $nLipidDel[$_]{'upper'} = getnLipPerArea($gridAProt[$_]{'upper'}, $coordData{'box'}, $lipidData[$_]{'leaflets'}{'upper'}{'nLipids'});
+    $nLipidDel[$_]{'lower'} = getnLipPerArea($gridAProt[$_]{'lower'}, $coordData{'box'}, $lipidData[$_]{'leaflets'}{'lower'}{'nLipids'});
+    print "Upper leaflet: $nLipidDel[$_]{'upper'} ($gridAProt[$_]{'upper'}); Lower leaflet: $nLipidDel[$_]{'lower'} ($gridAProt[$_]{'lower'})\n";
+    print "Upper leaflet: " . round($nLipidDel[$_]{'upper'}, 1) . "; Lower leaflet: " . round($nLipidDel[$_]{'lower'}, 1) . "\n";
+
+    print "Will delete lipids in the upper leaflet:\n";
+    my $delOffset = 0;
+    for (my $i=0; $i<round($nLipidDel[$_]{'upper'}, 1); $i++) {
+        my $iTmp = $i+$delOffset;
+        while ($cavRes{'upper'}[$resOverlapList[$_]{'upper'}[$iTmp]]) {
+            $delOffset++;
+            $iTmp = $i+$delOffset;
+        }
+        print " " . $resOverlapList[$_]{'upper'}[$iTmp];
+        $delRes{'upper'}[$resOverlapList[$_]{'upper'}[$iTmp]] = 1;
+    }
+    print "\n";
+
+    print "Will delete lipids in the lower leaflet:\n";
+    $delOffset = 0;
+    for (my $i=0; $i<round($nLipidDel[$_]{'lower'}, 1); $i++) {
+        my $iTmp = $i+$delOffset;
+        while ($cavRes{'lower'}[$resOverlapList[$_]{'lower'}[$iTmp]]) {
+            $delOffset++;
+            $iTmp = $i+$delOffset;
+        }
+        print " " . $resOverlapList[$_]{'lower'}[$iTmp];
+        $delRes{'lower'}[$resOverlapList[$_]{'lower'}[$iTmp]] = 1;
+    }
+    print "\n";
+
+
+    my @tmpArray = delResidues($coordData{'atoms'}, $delRes{'upper'});
+    $coordData{'atoms'} = $tmpArray[0];
+    my $delAtomsDataRef = $tmpArray[1];
+    updateDelResnames(\%delResnames, $delAtomsDataRef) if $topFile && !$noDeflating;
+
+    @tmpArray = delResidues($coordData{'atoms'}, $delRes{'lower'});
+    $coordData{'atoms'} = $tmpArray[0];
+    $delAtomsDataRef    = $tmpArray[1];
+    updateDelResnames(\%delResnames, $delAtomsDataRef) if $topFile && !$noDeflating;
+    ############################################################################
+
+
+    my @inflResList; # Only to check the output. COMMENT THIS OUT.
+    my @statResList; # Only to check the output. COMMENT THIS OUT.
+    my @cavResList;  # Only to check the output. COMMENT THIS OUT.
+    for (my $uResId=0; $uResId<=@{$resOverlapScore[$_]}; $uResId++) {
+        next unless $uResIdAtomIdList[$uResId][0];
+        next unless $coordData{'atoms'}[$uResIdAtomIdList[$uResId][0]];
+        next unless defined $resOverlapScore[$_][$uResId];
+        unless ($resOverlapScore[$_][$uResId]) {
+            push(@{$statAtomList[$_]}, @{$uResIdAtomIdList[$uResId]});
+            push(@statResList, $uResId); # COMMENT THIS OUT.
+            next;
+        }
+
+        ### Get the geometrical center of each inflatable lipid ################
+        %{$resGeoCenter[$uResId]} = getGeoCenterXY($uResIdAtomIdList[$uResId], $coordData{'atoms'});
+#        printf("Geometrical center of the reference lipid %d is: x = %.2f, y=%.2f\n", $resId, $resGeoCenter[$resId]{'cooX'}, $resGeoCenter[$resId]{'cooY'});
+        ########################################################################
+
+        if ($lipidFilledCav && ($cavRes{'upper'}[$uResId] || $cavRes{'lower'}[$uResId])) {
+            push(@{$cavAtomList[$_]}, @{$uResIdAtomIdList[$uResId]});
+            push(@cavResList, $uResId); # Only to check the output. COMMENT THIS OUT.
+
+            if ($cavRes{'upper'}[$uResId]) {
+                foreach my $cavAtomId (@{$uResIdAtomIdList[$uResId]}) {
+                    $groupCavAtomInflVectors[$_][$cavAtomId]{'cooX'} = $coordData{'atoms'}[$cavAtomId]{'cooX'} - $cavGeoCenterXy[$_]{'upper'}{'cooX'};
+                    $groupCavAtomInflVectors[$_][$cavAtomId]{'cooY'} = $coordData{'atoms'}[$cavAtomId]{'cooY'} - $cavGeoCenterXy[$_]{'upper'}{'cooY'};
+                    $groupCavAtomInflVectors[$_][$cavAtomId]{'cooZ'} = $coordData{'atoms'}[$cavAtomId]{'cooZ'} - $cavGeoCenterXy[$_]{'upper'}{'cooZ'};
+
+                    $coordData{'atoms'}[$cavAtomId]{'cooX'} = $cavGeoCenterXy[$_]{'upper'}{'cooX'};
+                    $coordData{'atoms'}[$cavAtomId]{'cooY'} = $cavGeoCenterXy[$_]{'upper'}{'cooY'};
+                    $coordData{'atoms'}[$cavAtomId]{'cooZ'} = $cavGeoCenterXy[$_]{'upper'}{'cooZ'};
+                }
+            }
+            elsif ($cavRes{'lower'}[$uResId]) {
+                foreach my $cavAtomId (@{$uResIdAtomIdList[$uResId]}) {
+                    print "Ascribe atom $cavAtomId a translation vector\n";
+                    $groupCavAtomInflVectors[$_][$cavAtomId]{'cooX'} = $coordData{'atoms'}[$cavAtomId]{'cooX'} - $cavGeoCenterXy[$_]{'lower'}{'cooX'};
+                    $groupCavAtomInflVectors[$_][$cavAtomId]{'cooY'} = $coordData{'atoms'}[$cavAtomId]{'cooY'} - $cavGeoCenterXy[$_]{'lower'}{'cooY'};
+                    $groupCavAtomInflVectors[$_][$cavAtomId]{'cooZ'} = $coordData{'atoms'}[$cavAtomId]{'cooZ'} - $cavGeoCenterXy[$_]{'lower'}{'cooZ'};
+
+                    $coordData{'atoms'}[$cavAtomId]{'cooX'} = $cavGeoCenterXy[$_]{'lower'}{'cooX'};
+                    $coordData{'atoms'}[$cavAtomId]{'cooY'} = $cavGeoCenterXy[$_]{'lower'}{'cooY'};
+                    $coordData{'atoms'}[$cavAtomId]{'cooZ'} = $cavGeoCenterXy[$_]{'lower'}{'cooZ'};
+                }
+            }
+        }
+        else {
+            push(@{$inflAtomList[$_]}, @{$uResIdAtomIdList[$uResId]});
+            push(@inflResList, $uResId); # Only to check the output. COMMENT THIS OUT.
+        }
+    }
+    push(@{$statNdxGroup{'atoms'}}, @{$statAtomList[$_]});
+    push(@{$dynaNdxGroup{'atoms'}}, @{$inflAtomList[$_]});
+    push(@{$cavNdxGroup{'atoms'}}, @{$cavAtomList[$_]}) if $lipidFilledCav;
+
+    print "Will inflate these residues\n";
+    for (my $i=0; $i<@inflResList; $i++) {
+        print " " . $inflResList[$i];
+    }
+    print "\n";
+    print "Will handle these residues as static\n";
+    for (my $i=0; $i<@statResList; $i++) {
+        print " " . $statResList[$i];
+    }
+    print "\n";
+
+    if ($lipidFilledCav) {
+        print "Will handle these residues as cavity\n";
+        for (my $i=0; $i<@cavResList; $i++) {
+            print " " . $cavResList[$i];
+        }
+        print "\n";
+    }
+    
+    ### Recursive function for dynamic inflating ###############################
+    $groupInflatingFactors[$_] = dynInflating($gridSlices[$_], $inflAtomList[$_], $coordData{'atoms'}, \%protGeoCenter, \@resGeoCenter);
+    print "Used an inflating factor of " . $groupInflatingFactors[$_] . " to solve protein - lipid overlaps\n";
+    ############################################################################
+}
+
+
+push(@ndxData, \%statNdxGroup);
+push(@ndxData, \%dynaNdxGroup);
+push(@ndxData, \%cavNdxGroup) if $lipidFilledCav;
+
+
+
+### Update internal data after lipid deletion ##################################
+my @newNdxData;
+my @renumMatrix;
+($coordData{'atoms'}, @renumMatrix) = renumAtoms($coordData{'atoms'});
+$coordData{'nAtoms'} = scalar(@{$coordData{'atoms'}}) - 1;
+
+#unless ($lipidResname && $noDeflating) {
+    @newNdxData = NDXFiles::updateNdxData(\@ndxData, \@renumMatrix);
+#    NDXFiles::printNdxGroups(@newNdxData); # Just check the updated NDX data.
+    NDXFiles::writeNdx("inflated.ndx", \@newNdxData);
+#}
+################################################################################
+
+
+
+### Inflate the box ############################################################
+my $maxInflFactor = 0;
+foreach (@inflGroupIds) {
+    $maxInflFactor = $groupInflatingFactors[$_] if $groupInflatingFactors[$_] > $maxInflFactor;
+}
+inflateBoxXY($coordData{'box'}, $maxInflFactor);
+centerGroupXY($newNdxData[0]{'atoms'}, $coordData{'atoms'}, $coordData{'box'});
+################################################################################
+
+
+
+### Write inflated coordinates to an output coordinates file ###################
+if ($outFile =~ /\.pdb$/) {
+    PDBFiles::writePdb($outFile, \%coordData);
+}
+else {
+    GROFiles::writeGro($outFile, \%coordData);
+}
+################################################################################
+
+
+
+### Update topology ############################################################
+if ($topFile) {
+    %topData = TOPFiles::readTop($topFile); # Read input TOP file.
+    foreach my $resname (keys %delResnames) {
+        my $tmpDir = '.';
+        $tmpDir = $1 if ($topFile =~ /^(.*)\/[^\/]+$/);
+        my $molType = resname2moltype($topData{'include'}, $resname, $tmpDir . "/");
+        TOPFiles::updateTop($topFile, $molType, $topData{'molecules'}{$resname} - $delResnames{$resname}) if $molType;
+    }
+}
+################################################################################
+
+
+
+### Shrink the model ###########################################################
+exit if $noDeflating;
+
+
+### Get the deflating factor of each group #####################################
+foreach (@inflGroupIds) {
+    $groupDeflatingFactors[$_] = getDeflatingFactor($groupInflatingFactors[$_], $nDeflatingSteps);
+    print "Will use a deflating factor of " . $groupDeflatingFactors[$_] . " to shrink the lipids back in $nDeflatingSteps steps\n";
+}
+################################################################################
+
+
+print "Deflating\n";
+
+my @newInflAtomList;
+my @newCavAtomList;
+foreach my $groupId (@inflGroupIds) {
+    foreach (@{$inflAtomList[$groupId]}) {
+        push(@{$newInflAtomList[$groupId]}, $renumMatrix[$_]);
+    }
+    foreach (@{$cavAtomList[$groupId]}) {
+        push(@{$newCavAtomList[$groupId]}, $renumMatrix[$_]);
+        print "Will convert atom Id $_ to $renumMatrix[$_]\n";
+    }
+}
+
+
+my $shrinkOutFile = sprintf("shrink.%02d.gro", 0);
+doEM($mdpFile, $outFile, $topFile, "inflated.ndx", $shrinkOutFile);
+#GROFiles::writeGro($shrinkOutFile, \%coordData);
+
+for (my $step=0; $step<$nDeflatingSteps; $step++) {
+    $shrinkOutFile = sprintf("shrink.%02d.gro", $step);
+    %coordData = GROFiles::readGro($shrinkOutFile); # Read input GRO file.
+
+    ### Dynamic box sice handling (multiple bilayers) ##########################
+    my %tmpBoxXY = ('cooX' => 0, 'cooY' => 0);
+    foreach (@inflGroupIds) {
+        my $boxX = $coordData{'box'}{'cooX'} * $groupDeflatingFactors[$_];
+        my $boxY = $coordData{'box'}{'cooY'} * $groupDeflatingFactors[$_];
+        $tmpBoxXY{'cooX'} = $boxX if $boxX > $tmpBoxXY{'cooX'};
+        $tmpBoxXY{'cooY'} = $boxY if $boxY > $tmpBoxXY{'cooY'};
+    }
+    $coordData{'box'}{'cooX'} = $tmpBoxXY{'cooX'};
+    $coordData{'box'}{'cooY'} = $tmpBoxXY{'cooY'};
+    ############################################################################
+
+    %protGeoCenter = getGeoCenterXY($newNdxData[$protGroupId]{'atoms'}, $coordData{'atoms'});
+
+    foreach (@inflGroupIds) {
+        my @resGeoCenter = getInflGeoCenterXY($newInflAtomList[$_], $coordData{'atoms'});
+        scaleGroupXY($newInflAtomList[$_], $coordData{'atoms'}, $groupDeflatingFactors[$_], \%protGeoCenter, \@resGeoCenter, 1);
+
+        if ($lipidFilledCav) {
+            my $tmpFactor = 1/$nDeflatingSteps;
+            foreach my $cavAtomId (@{$cavAtomList[$_]}) {
+                print "Will inflate cavity lipid atom $cavAtomId\n";
+                $coordData{'atoms'}[ $renumMatrix[$cavAtomId] ]{'cooX'} += $groupCavAtomInflVectors[$_][$cavAtomId]{'cooX'} * $tmpFactor;
+                $coordData{'atoms'}[ $renumMatrix[$cavAtomId] ]{'cooY'} += $groupCavAtomInflVectors[$_][$cavAtomId]{'cooY'} * $tmpFactor;
+                $coordData{'atoms'}[ $renumMatrix[$cavAtomId] ]{'cooZ'} += $groupCavAtomInflVectors[$_][$cavAtomId]{'cooZ'} * $tmpFactor;
+            }
+        }
+    }
+    centerGroupXY($newNdxData[0]{'atoms'}, $coordData{'atoms'}, $coordData{'box'});
+
+    $shrinkOutFile = sprintf("shrink.%02d.gro", $step+1);
+#    GROFiles::writeGro($shrinkOutFile, \%coordData);
+    GROFiles::writeGro('tmp_out.gro', \%coordData);
+    doEM($mdpFile, 'tmp_out.gro', $topFile, "inflated.ndx", $shrinkOutFile);
+}
+
+
+### Update NDX file for the last energy minimization step ######################
+#pop(@newNdxData);
+#pop(@newNdxData);
+#my @empty;
+#my @dynaAtomList;
+#foreach (@statAtomList) {
+#    push(@dynaAtomList, $renumMatrix[$_]);
+#}
+#foreach (@inflAtomList) {
+#    push(@dynaAtomList, $renumMatrix[$_]);
+#}
+#my %statNdxGroup = ('groupName' => "Static");
+#my %dynaNdxGroup = ('groupName' => "Dynamic");
+#$statNdxGroup{'atoms'}[0] = 1; # NOTE: Atom number one is set as static! This may lead to problems, but the group must not be empty.
+#$dynaNdxGroup{'atoms'} = \@dynaAtomList;
+#push(@newNdxData, \%statNdxGroup);
+#push(@newNdxData, \%dynaNdxGroup);
+#my @embeddedNdxData = NDXFiles::updateNdxData(\@newNdxData, \@renumMatrix);
+#NDXFiles::printNdxGroups(@embeddedNdxData); # Just check the updated NDX data.
+#NDXFiles::writeNdx("embedded.ndx", \@embeddedNdxData);
+################################################################################
+
+#doEM($mdpFile, $shrinkOutFile, $topFile, "embedded.ndx", "embedded.gro");
+################################################################################
+
+
+sub getInflGeoCenterXY {
+    my $inflAtomListRef = shift;
+    my $coordsRef       = shift;
+    my @resGeoCenter;
+    my @residAtomCounter;
+    my @resIdCounter;
+    my @uResIdList;
+
+    foreach (@{$inflAtomListRef}) {
+        next unless $$coordsRef[$_];
+        my $uResId = $$coordsRef[$_]{'uResId'};
+        $resGeoCenter[$uResId]{'cooX'} += $$coordsRef[$_]{'cooX'};
+        $resGeoCenter[$uResId]{'cooY'} += $$coordsRef[$_]{'cooY'};
+        $residAtomCounter[$uResId]++;
+        next if $resIdCounter[$uResId];
+        push(@uResIdList, $uResId);
+        $resIdCounter[$uResId] = 1;
+    }
+    foreach (@uResIdList) {
+        $resGeoCenter[$_]{'cooX'} /= $residAtomCounter[$_];
+        $resGeoCenter[$_]{'cooY'} /= $residAtomCounter[$_];
+    }
+    return @resGeoCenter;
+}
+
+
+printFoot();
+exit;
+
+
+sub overlapScore2PdbBeta {
+    my $pdbFile            = shift;
+    my $coordDataRef       = shift;
+    my $resOverlapScoreRef = shift;
+
+    foreach (@{$$coordDataRef{'atoms'}}) {
+#        print $$resOverlapScoreRef[ $$_{'uResId'} ] . " $$_{'uResId'}\n";
+        $$_{'tempFactor'} = $$resOverlapScoreRef[ $$_{'uResId'} ];
+    }
+
+    PDBFiles::writePdb($pdbFile, $coordDataRef);
+}
+
+
+
+sub getDeflatingFactor {
+    my $inflatingFactor = shift;
+    my $nDeflatingSteps = shift;
+
+    return exp((log(1/$inflatingFactor))/$nDeflatingSteps);
+}
+
+
+
+sub dynInflating {
+    my $gridSlicesRef    = shift;
+    my $inflAtomListRef  = shift;
+    my $coordsRef        = shift;
+    my $protGeocenterRef = shift;
+    my $resGeoCenterRef  = shift;
+    my $scalingFactor    = shift;
+
+    $scalingFactor = 1.1 unless $scalingFactor;
+
+
+    ### Inflate the defined lipids #############################################
+    my $scaledCoordsRef = scaleGroupXY($inflAtomListRef, $coordsRef, $scalingFactor, $protGeocenterRef, $resGeoCenterRef);
+    ############################################################################
+
+
+    ### Check the inflated lipid atoms for protein overlaps ####################
+    unless (checkOverlap($gridSlicesRef, $inflAtomListRef, $scaledCoordsRef)) {
+        foreach (@{$inflAtomListRef}) {
+            $$coordsRef[$_]{'cooX'} = $$scaledCoordsRef[$_]{'cooX'};
+            $$coordsRef[$_]{'cooY'} = $$scaledCoordsRef[$_]{'cooY'};
+        }
+        return sprintf("%.1f", $scalingFactor);
+    }
+    ############################################################################
+
+
+    ### Still overlaps? Inflate again! #########################################
+    return dynInflating($gridSlicesRef, $inflAtomListRef, $coordsRef, $protGeocenterRef, $resGeoCenterRef, $scalingFactor+0.1);
+    ############################################################################
+}
+
+
+
+sub scaleGroupXY {
+    my $atomIdsRef       = shift;
+    my $coordsRef        = shift;
+    my $scalingFactor    = shift;
+    my $protGeoCenterRef = shift;
+    my $resGeoCenterRef  = shift;
+    my $direct           = shift; # Apply translation directly to the coordinates (1) or create new coordinates (0)?
+    my @translVec; # Scaling vector (x,y) for each lipid residue.
+    my @scaledCoords;
+
+
+    foreach (@{$atomIdsRef}) {
+        my $uResId = $$coordsRef[$_]{'uResId'};
+        next unless $$resGeoCenterRef[$uResId];
+        next if $translVec[$uResId];
+        $translVec[$uResId]{'cooX'} = ($$resGeoCenterRef[$uResId]{'cooX'} - $$protGeoCenterRef{'cooX'}) * $scalingFactor - ($$resGeoCenterRef[$uResId]{'cooX'} - $$protGeoCenterRef{'cooX'});
+        $translVec[$uResId]{'cooY'} = ($$resGeoCenterRef[$uResId]{'cooY'} - $$protGeoCenterRef{'cooY'}) * $scalingFactor - ($$resGeoCenterRef[$uResId]{'cooY'} - $$protGeoCenterRef{'cooY'});
+    }
+
+
+    foreach (@{$atomIdsRef}) {
+        my $uResId = $$coordsRef[$_]{'uResId'};
+        next unless $translVec[$uResId]{'cooX'};
+        if ($direct) {
+            $$coordsRef[$_]{'cooX'} += $translVec[$uResId]{'cooX'};
+            $$coordsRef[$_]{'cooY'} += $translVec[$uResId]{'cooY'};
+        }
+        else {
+            $scaledCoords[$_]{'atomName'} = $$coordsRef[$_]{'atomName'};
+            $scaledCoords[$_]{'cooX'} = $$coordsRef[$_]{'cooX'} + $translVec[$uResId]{'cooX'};
+            $scaledCoords[$_]{'cooY'} = $$coordsRef[$_]{'cooY'} + $translVec[$uResId]{'cooY'};
+            $scaledCoords[$_]{'cooZ'} = $$coordsRef[$_]{'cooZ'};
+        }
+    }
+    return \@scaledCoords;
+}
+
+
+
+sub checkOverlap {
+    my $gridSlicesRef = shift;
+    my $atomsIdsRef   = shift;
+    my $coordsRef     = shift;
+
+    foreach my $zSliceStr (keys %{$gridSlicesRef}) {
+        next unless $zSliceStr =~ /^([-+]?\d*\.?\d+([eE][-+]?\d+)?)-([-+]?\d*\.?\d+([eE][-+]?\d+)?)$/;
+        my $zSliceMin = $1;
+        my $zSliceMax = $3;
+
+        my $gridsizeX = @{$$gridSlicesRef{$zSliceStr}};
+        my $gridsizeY = @{$$gridSlicesRef{$zSliceStr}[0]};
+
+        foreach (@{$atomsIdsRef}) {
+            next unless $$coordsRef[$_]{'cooZ'};
+            next if $$coordsRef[$_]{'cooZ'} < $zSliceMin;
+            next if $$coordsRef[$_]{'cooZ'} > $zSliceMax;
+
+            my $element  = substr($$coordsRef[$_]{'atomName'}, 0, 1);
+            my $radius   = PTE::getRadius($element);
+            my $radiusSq = $radius * $radius;
+
+            my $tmpGridX = int($$coordsRef[$_]{'cooX'} / $gridDelta);
+            my $tmpGridY = int($$coordsRef[$_]{'cooY'} / $gridDelta);
+            my $subrange = int($radiusSq / $gridDelta);
+
+            for (my $x=getMax($tmpGridX-$subrange, 0); $x<=getMin($tmpGridX+$subrange, $gridsizeX-1); $x++) {
+                for (my $y=getMax($tmpGridY-$subrange, 0); $y<=getMin($tmpGridY+$subrange, $gridsizeY-1); $y++) {
+                    next unless $$gridSlicesRef{$zSliceStr}[$x][$y];
+
+                    my $dx = $$coordsRef[$_]{'cooX'} - $x * $gridDelta;
+                    my $dy = $$coordsRef[$_]{'cooY'} - $y * $gridDelta;
+                    next if ($dx*$dx + $dy*$dy) > $radiusSq;
+
+                    return 1 if ($$gridSlicesRef{$zSliceStr}[$x][$y]);
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+
+
+sub delResidues {
+    my $coordsRef = shift;
+    my $delResRef = shift;
+    my @restAtomsArray;
+    my @delAtomsArray;
+
+    for (my $i=0; $i<@{$coordsRef}; $i++) {
+        next unless $$coordsRef[$i]{'uResId'};
+#        print "Will remove residue $$coordsRef[$i]{'uResId'} (atom $i)\n";
+        $$delResRef[$$coordsRef[$i]{'uResId'}] ? $delAtomsArray[$i] = $$coordsRef[$i] : $restAtomsArray[$i] = $$coordsRef[$i];
+    }
+    return (\@restAtomsArray, \@delAtomsArray);
+}
+
+
+
+sub uResId2AtomIdList {
+    my $coordsRef = shift;
+
+    my @uResIdAtomIdList;
+
+    for (my $atomId=0; $atomId<@{$coordsRef}; $atomId++) {
+        next unless $$coordsRef[$atomId]{'uResId'};
+        push(@{$uResIdAtomIdList[$$coordsRef[$atomId]{'uResId'}]}, $atomId);
+    }
+    return @uResIdAtomIdList;
+}
+
+
+
+sub getnLipPerArea {
+    my $areaProtein = shift;
+    my $boxRef      = shift;
+    my $nLipids     = shift;
+
+    my $areaPerLipid = $$boxRef{'cooX'} * $$boxRef{'cooY'} / $nLipids;
+
+    return ($areaProtein / $areaPerLipid);
+}
+
+
+
+sub sortResOverlaps {
+    my $resOverlapScoreRef = shift;
+
+    my @tmp;
+    for (my $resId=0; $resId<@{$resOverlapScoreRef}; $resId++) {
+        next unless $$resOverlapScoreRef[$resId];
+        my %tmpHash = ('uResId' => $resId,
+                       'score'  => $$resOverlapScoreRef[$resId]);
+        push(@tmp, \%tmpHash);
+    }
+    return sort({$b->{'score'}<=>$a->{'score'}} @tmp);
+}
+
+
+
+sub getOverlaps {
+    my $gridRef            = shift;
+    my $atomsIdsRef        = shift;
+    my $coordsRef          = shift;
+    my $zLimitUpper        = shift;
+    my $zLimitLower        = shift;
+    my $resOverlapScoreRef = shift;
+    my $resCavityScoreRef  = shift;
+    my $lipidFilledCav     = shift;
+
+    my $gridsizeX = @$gridRef;
+    my $gridsizeY = @$gridRef[0];
+    my $nOverlaps   = 0;
+    my $atomCounter = 0;
+    my @atomsWithOverlapScore;
+
+    my @specialGrid;
+
+    print "      Searching for protein - lipid overlaps: 0.000%\r" if $main::verbose;
+    foreach (@{$atomsIdsRef}) {
+        next unless $$coordsRef[$_]{'cooZ'};
+        printf("      Searching for protein - lipid overlaps: %d%% (found overlaps %d)\r", ($atomCounter++)/scalar(@{$atomsIdsRef})*100, $nOverlaps) if $main::verbose;
+        next if $$coordsRef[$_]{'cooZ'} > $zLimitUpper;
+        next if $$coordsRef[$_]{'cooZ'} < $zLimitLower;
+
+        my $uResId = $$coordsRef[$_]{'uResId'};
+        $$resOverlapScoreRef[$uResId] = 0 unless $$resOverlapScoreRef[$uResId];
+        $$resCavityScoreRef[$uResId]  = 0 unless $$resCavityScoreRef[$uResId];
+
+        my $element = substr($$coordsRef[$_]{'atomName'}, 0, 1);
+        my $radius  = PTE::getRadius($element);
+        my $radius2 = $radius * $radius;
+
+        my $tmpGridX = int($$coordsRef[$_]{'cooX'} / $gridDelta);
+        my $tmpGridY = int($$coordsRef[$_]{'cooY'} / $gridDelta);
+        my $subrange = int($radius / $gridDelta);
+
+        for (my $x=getMax($tmpGridX-$subrange, 0); $x<=getMin($tmpGridX+$subrange, $gridsizeX-1); $x++) {
+            for (my $y=getMax($tmpGridY-$subrange, 0); $y<=getMin($tmpGridY+$subrange, $gridsizeY-1); $y++) {
+                next unless $$gridRef[$x][$y];
+
+                my $dx = $$coordsRef[$_]{'cooX'} - $x * $gridDelta;
+                my $dy = $$coordsRef[$_]{'cooY'} - $y * $gridDelta;
+                next if ($dx*$dx + $dy*$dy) > $radius2;
+
+                if ($$gridRef[$x][$y] == 2) {
+                    $$resOverlapScoreRef[$uResId] += $lipidFilledCav ? 1 : 4; # Prefer cavity lipids for deletion if there is no lipid-filled cavity.
+                    $$resCavityScoreRef[$uResId]++;
+                }
+                else {
+                    $$resOverlapScoreRef[$uResId]++;
+                }
+
+                $nOverlaps++ unless $atomsWithOverlapScore[$_];
+                $atomsWithOverlapScore[$_] = 1;
+            }
+        }
+    }
+    printf("      Searching for protein - lipid overlaps: 100%% (found overlaps %d)\n", $nOverlaps) if $main::verbose;
+}
+
+
+
+sub doEM {
+    my $mdpFile   = shift;
+    my $coordFile = shift;
+    my $topFile   = shift;
+    my $ndxFile   = shift;
+    my $shrinkOut = shift;
+
+    my $tmpCmd = sprintf("grompp -f %s -c %s -p %s -n %s -o %s -maxwarn 1", $mdpFile, $coordFile, $topFile, $ndxFile, 'tmp.tpr');
+    print $tmpCmd . "\n";
+    `$tmpCmd 1>>log.out 2>&1`;
+
+    $tmpCmd = sprintf("mdrun -s %s -v -deffnm %s -c %s", 'tmp.tpr', 'tmp_out', $shrinkOut);
+    print $tmpCmd . "\n";
+    `$tmpCmd 1>>log.out 2>&1`;
+
+    system("rm tmp.tpr tmp_out.* step*.pdb mdout.mdp");
+}
+
+
+
+
+################################################################################
+### Subroutines ################################################################
+################################################################################
+sub printHead {
+    print <<EndOfHead;
+################################################################################
+
+                                InflateGRO2 $version
+                  Inflate lipid bilayers for protein insertion
+               (C) Thomas H. Schmidt & Christian Kandt, 2011-$year
+
+                         http://www.csb.bit.uni-bonn.de
+
+                 InflateGRO comes with ABSOLUTELY NO WARRANTY.
+          This is free software, and you are welcome to redistribute it
+            under certain conditions; type `--copyright' for details.
+
+################################################################################
+
+EndOfHead
+}
+
+
+
+sub printFoot {
+    print <<EndOfFoot;
+Please cite:
+  [1] Schmidt, T. H. & Kandt C. LAMBADA & InflateGRO2: Efficient Membrane Alignment
+      and Insertion of Membrane Proteins for Molecular Dynamics Simulations.
+      J. Chem. Inf. Model. (2012).[http://dx.doi.org/10.1021/ci3000453]
+
+EndOfFoot
+}
+
+
+
+sub printHelp {
+    print <<EndOfHelp;
+DESCRIPTION
+-----------
+InflateGRO2 automatically embeds membrane protein structures into lipid bilayer
+patches:
+1. Calculate the area occupied by the protein for each leaflet
+2. Rank all lipids in the system based on their overlap with the protein
+3. Remove the number of top-ranked lipids (highest overlap) matching the
+   previously calculated area occupied by the protein
+4. Calculate the least translation vector (inflating factor) needed to solve all
+   lipid/protein overlaps and apply lateral lipid translation (inflating) only
+   to the lipids that are still overlapping with the protein (dynamic component).
+   Freeze everything else (static component) to minimize disturbance of the
+   membrane structure and to retain a maximum of equilibrium lipid conformations.
+5. Calculate the (deflating) factor to translate the expanded lipids back, close
+   to their original positions, within a defined number of alternating compression
+   and energy minimization steps; perfom this iterative compression phase.
+
+A final energy minimization of the model with enabled non-bonded interactions
+is needed to solve remaining overlaps of system components.
+
+
+InflateGRO2 reads the GRO coordinate file of a membrane protein structure
+overlapping with a lipid bilayer (-f) with a corresponding GROMACS topology
+file (-p) which is updated during the embedding procedure (lipid deletion).
+The coordinates of the model in the "inflated" state were written into a GRO file
+defined by the -o parameter.
+The embedded structure will be written to a file named "shrink.20.gro" if a number
+of 20 compression (deflating) steps is used (--dsteps).
+The compression procedure can be switched off using --nodefl parameter.
+
+If the --lrname parameter is set lipids will be detected by theri residue name
+(e.g. POPC). Alternatively, atoms that should be handled as protein and lipid
+could be defined by GROMACS NDX groups (using make_ndx) and given to the program
+using the -n option.
+
+The MDP file for performing the energy minimization steps during the compression
+phase using mdrun is passed to the program by the -m parameter. 
+
+
+USAGE: inflategro2 -f INPUTGROFILE -p INPUTTOPFILE -n INPUTNDXFILE -o OUTPUTCOORDFILE
+
+EndOfHelp
+
+printf("%5s %12s  %-11s  %s\n", "Option", "Filename", "Type", "Description");
+print ("------------------------------------------------------------\n");
+printf("%4s  %13s  %-11s  %s\n", "-f", $coordFile, "Input", "Structure file: gro");
+printf("%4s  %13s  %-11s  %s\n", "-p", $topFile, "Input", "GROMACS topology file");
+printf("%4s  %13s  %-11s  %s\n", "-o", $outFile, "Output", "Structure file: gro pdb");
+printf("%4s  %13s  %-11s  %s\n", "-n", $ndxInFile, "Input, Opt.", "GROMACS index file");
+printf("%4s  %13s %-9s  %s\n", "-m", $mdpFile, "Input", "grompp input file with MD parameters");
+printf("%4s %13s %-9s %s\n", "--oapl", $aplOutFile, "Output", "Area per lipid data file");
+
+printf("\n%-12s %-6s %-6s  %s\n", "Option", "Type", "Value", "Description");
+print ("------------------------------------------------------\n");
+printf("%-12s %-6s %-6s  %s\n", "-[no]h", "bool", "yes", "Print help info and quit (also -? and --help)");
+printf("%-12s %-6s %-6s  %s\n", "-g", "real", $gridDelta, "Grid spacing for protein area detection (nm)\n                            Angstroem for PDB files)");
+printf("%-12s %-6s %-6s  %s\n", "--dsteps", "int", $nDeflatingSteps, "Number of steps for the deflating procedure");
+printf("%-12s %-6s %-6s  %s\n", "-[no]v", "bool", $verbose ? "yes" : "no", "Be loud, noisy, communicative, meaningful and\n                            profound. Seriously!");
+printf("%-12s %-6s %-6s  %s\n", "--lrname", "string", $lipidResname, "Define the name of the lipids in the input structure");
+printf("%-12s %-6s %-6s  %s\n", "--prefname", "string", $refAtomNames{'protein'} , "Define the reference atom name of the protein (regex)");
+printf("%-12s %-6s %-6s  %s\n", "--lrefname", "string", $refAtomNames{'lipid'} , "Define the reference atom name of the lipids (regex)");
+printf("%-12s %-6s %-6s  %s\n", "--[no]nodefl", "bool", $noDeflating ? "yes" : "no", "Switch off the deflating after inflating");
+printf("%-12s %-6s %-6s  %s\n", "--[no]clear", "bool", $clearGroups ? "yes" : "no", "Define NDX groups for deleting atoms");
+printf("%-12s %-6s %-6s  %s\n", "-[no]copyright", "bool", "no", "Print copyright information");
+print ("\n");
+
+    printFoot();
+    exit;
+}
+
+
+
+
+sub printCopyright {
+    print <<"EndOfCopyright";
+InflateGRO2 is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+any later version.
+
+InflateGRO2 is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along
+with InflateGRO2; if not, write to the Free Software Foundation, Inc.,
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+
+EndOfCopyright
+    exit;
+}
+
+
+
+sub cmdlineParser {
+    my $paramsRef = shift;
+
+    my %knownParam;
+    my @unknownParam;
+
+    for (my $argID=0; $argID<@ARGV; $argID++) {
+        my $cmdlineName = $ARGV[$argID];
+        $knownParam{$ARGV[$argID]} = 0;
+
+        foreach my $paramKey (keys %{$paramsRef}) {
+            my $paramName = $paramKey;
+            my $paramType = 0;
+            my $paramIni  = "--";
+            my $isArray   = 0;
+
+            if ($paramKey =~ /^(.+?)=([\@f])$/) {
+                $paramName = $1;
+                $paramType = $2;
+            }
+
+            $paramIni = "-" if (length($paramName) == 1);
+
+            if ($paramType eq "@") {
+                $isArray = 1;
+            }
+            elsif ($paramType eq "f") {
+                if ($cmdlineName eq $paramIni.$paramName) {
+                    if (ref(${$paramsRef}{$paramKey}) eq "SCALAR") {
+                        ${${$paramsRef}{$paramKey}} = 1;
+                        $knownParam{$cmdlineName} = 1;
+                    }
+                    elsif (ref(${$paramsRef}{$paramKey}) eq "CODE") {
+                        &{${$paramsRef}{$paramKey}}();
+                        $knownParam{$cmdlineName} = 1;
+                    }
+                }
+                next;
+            }
+
+            if ($cmdlineName eq $paramIni.$paramName && not $isArray) {
+                $argID++;
+                next if($ARGV[$argID] =~ /^-/);
+
+                ${${$paramsRef}{$paramKey}} = $ARGV[$argID];
+                $knownParam{$cmdlineName} = 1;
+            }
+            elsif ($ARGV[$argID] eq $paramIni.$paramName && $isArray) {
+                $knownParam{$cmdlineName} = 1;
+                $argID++;
+
+                my @tmpArray;
+                while ($argID <= $#ARGV && not $ARGV[$argID] =~ /^--/ && not $ARGV[$argID] =~ /^-.$/) {
+                    push (@tmpArray, $ARGV[$argID]);
+                    $argID++;
+                }
+                @{${$paramsRef}{$paramKey}} = @tmpArray;
+                $argID--;
+            }
+        }
+
+        if (defined $knownParam{$cmdlineName} && $knownParam{$cmdlineName} == 0) {
+            push(@unknownParam, $cmdlineName) if($cmdlineName =~ /^-/);
+        }
+    }
+
+
+    ### Catch unknown parameters ###############################################
+    if (@unknownParam && ${$paramsRef}{"UNKNOWN"} && ref(${$paramsRef}{"UNKNOWN"}) eq "CODE") {
+        print "WARNING: Unknown or non-set parameters detected:\n";
+        for (@unknownParam) { print "        \"$_\"\n"; }
+        &{${$paramsRef}{"UNKNOWN"}}();
+    }
+    elsif (@unknownParam) {
+        print "ERROR: Unknown or non-set parameters detected:\n";
+        for(@unknownParam) { print "       \"$_\"\n"; }
+        exit;
+    }
+    ############################################################################
+
+
+    ### Catch no given parameters ##############################################
+    if (!@ARGV && ${$paramsRef}{"NOPARAM"} && ref(${$paramsRef}{"NOPARAM"}) eq "CODE") {
+        print "\nWARNING: Parameters needed...\n\n";
+        &{${$paramsRef}{"NOPARAM"}}();
+    }
+    ############################################################################
+}
+
+
+sub fileBackup {
+    my $file    = shift;
+
+    my $tmpDir  = './';
+    my $tmpFile = $file;
+
+    ($tmpDir, $tmpFile) = ($1, $2) if ($file =~ /^(.*\/)([^\/]+)$/);
+
+    my $backupFile = "#$tmpFile#";
+
+    if (-e $tmpDir . $backupFile) {
+        my $counter = 1;
+        while (-e $tmpDir . $backupFile) {
+            $backupFile =~ s/(\.\d+)?\#$/\.$counter#/;
+            $counter++;
+        }
+    }
+    File::Copy::copy($file, $tmpDir . $backupFile) || die "ERROR: Cannot backup file  \"$file\" to \"$tmpDir$backupFile\": $!\n";
+    print "\nBack Off! I just backed up $file to $tmpDir$backupFile\n" if $main::verbose;
+    return $tmpDir . $backupFile;
+}
+
+
+
+sub selectGroupIds {
+    my $ndxDataRef      = shift;
+    my $groupNameText   = shift;
+    my $nGroups         = shift;
+    my @selectGroupIds;
+
+    $nGroups = 10000 unless $nGroups; # Set the limit of selectable groups to 10000.
+
+    print "\n  Select a group for $groupNameText: > ";
+
+    chomp(my $groupId = <STDIN>);
+    while (!scalar(@selectGroupIds) || $groupId ne 'q') {
+        if ($groupId =~ /^\s*(\d+)\s*$/ && $ndxData[$1]{'groupName'}) {
+            push(@selectGroupIds, $1);
+            print "    Added group $1.\n";
+            return @selectGroupIds if scalar(@selectGroupIds) == $nGroups;
+            print "  Do you want to select another group? (\'q\' for quit) > ";
+        }
+        else {
+            print "    Invalid group...\n  Please try to select a group for $groupNameText again (\'q\' for quit): > ";
+        }
+        chomp($groupId = <STDIN>);
+    }
+    return @selectGroupIds;
+}
+
+
+
+sub inflateBoxXY {
+    $_[0]{'cooX'} *= $_[1];
+    $_[0]{'cooY'} *= $_[1];
+}
+
+
+
+sub centerGroupXY {
+    my $atomIdsRef = shift;
+    my $coordsRef  = shift;
+    my $boxRef     = shift;
+
+    my %groupGeoCenter = getGeoCenterXY($atomIdsRef, $coordsRef);
+    my %translVector = ('cooX' => ($$boxRef{'cooX'}*0.5-$groupGeoCenter{'cooX'}),
+                        'cooY' => ($$boxRef{'cooY'}*0.5-$groupGeoCenter{'cooY'}));
+    foreach (@{$atomIdsRef}) {
+        $$coordsRef[$_]{'cooX'} += $translVector{'cooX'};
+        $$coordsRef[$_]{'cooY'} += $translVector{'cooY'};
+    }
+}
+
+
+
+sub getGeoCenterXY {
+    my $atomIdsRef = shift;
+    my $coordsRef  = shift;
+    my %geoCenter  = ('cooX' => 0,
+                      'cooY' => 0);
+
+    foreach (@{$atomIdsRef}) {
+        $geoCenter{'cooX'} += $$coordsRef[$_]{'cooX'};
+        $geoCenter{'cooY'} += $$coordsRef[$_]{'cooY'};
+    }
+    $geoCenter{'cooX'} /= scalar(@$atomIdsRef);
+    $geoCenter{'cooY'} /= scalar(@$atomIdsRef);
+    return %geoCenter;
+}
+
+
+
+sub getAtomIdList {
+    my $atomsRef = shift;
+    my $key      = shift;
+    my $needle   = shift;
+    my (@atomIdList, @restAtomIdList);
+
+    for (my $i=1; $i<@{$atomsRef}; $i++) {
+        $$atomsRef[$i]{$key} =~ /$needle/ ? push(@atomIdList, $i) : push(@restAtomIdList, $i);
+    }
+    return (\@atomIdList);
+#    return (\@atomIdList, \@restAtomIdList);
+}
+
+
+
+sub updateDelResnames {
+    my $delResnamesRef  = shift;
+    my $delAtomsDataRef = shift;
+    my %tmpResid;
+
+    for (my $i=0; $i<@{$delAtomsDataRef}; $i++) {
+        next unless $$delAtomsDataRef[$i];
+        next if $tmpResid{$$delAtomsDataRef[$i]{'uResId'}};
+        $tmpResid{$$delAtomsDataRef[$i]{'uResId'}} = 1;
+        $$delResnamesRef{$$delAtomsDataRef[$i]{'resName'}}++;
+    }
+}
+
+
+
+sub renumAtoms {
+    my $coordsRef = shift;
+    my @newCoords;
+    my $newAtomId = 1;
+    my @renumMatrix;
+
+    for (my $oldAtomId=0; $oldAtomId<@{$coordsRef}; $oldAtomId++) {
+        next unless $$coordsRef[$oldAtomId]{'uResId'};
+        $renumMatrix[$oldAtomId] = $newAtomId;
+        $newCoords[$newAtomId++] = $$coordsRef[$oldAtomId];
+    }
+    return (\@newCoords, @renumMatrix);
+}
+
+
+
+sub resname2moltype {
+    my $itpIncludeRef = shift;
+    my $resname       = shift;
+    my $topPath       = shift;
+    my $molType;
+
+    for (my $i=0; $i<@{$itpIncludeRef}; $i++) {
+        my $itpFile = -e ($topPath . $$itpIncludeRef[$i]) ? $topPath . $$itpIncludeRef[$i] : ($GMXLIB . "/" . $$itpIncludeRef[$i]);
+        print "Checking ITP file \"$itpFile\" for residue name $resname\n";
+        $molType = ITPFiles::resname2moltype($itpFile, $resname);
+        print "  Found residue name $resname in ITP file \"$itpFile\": moleculetype = \"$molType\"\n" if $molType;
+        return $molType if $molType;
+    }
+}
+
+
+
+sub round {
+    my ( $num, $prec ) = @_;
+    return int( $num / $prec + 0.5 - ( $num < 0 ) ) * $prec;
+}
+
+
+
+sub getMax {
+    return $_[0] if $_[0] > $_[1];
+    return $_[1];
+}
+
+
+
+sub getMin {
+    return $_[0] if $_[0] < $_[1];
+    return $_[1];
+}
+################################################################################
+
+
+
+################################################################################
+### Lipid routines #############################################################
+################################################################################
+package Lipid;
+
+sub analyzeBilayer {
+    my $atomIdsRef   = shift;
+    my $coordsRef    = shift;
+    my $refAtomName  = shift;
+    my @headAtomIds;
+    my %lipidData    = ('zCenter' => 0);
+
+    foreach (@{$atomIdsRef}) {
+        next unless $$coordsRef[$_]{'atomName'};
+        $lipidData{'zMin'} = $$coordsRef[$_]{'cooZ'} unless $lipidData{'zMin'};
+        $lipidData{'zMax'} = $$coordsRef[$_]{'cooZ'} unless $lipidData{'zMax'};
+        $lipidData{'zMin'} = $$coordsRef[$_]{'cooZ'} if $$coordsRef[$_]{'cooZ'} < $lipidData{'zMin'};
+        $lipidData{'zMax'} = $$coordsRef[$_]{'cooZ'} if $$coordsRef[$_]{'cooZ'} > $lipidData{'zMax'};
+        next unless $$coordsRef[$_]{'atomName'} =~ /$refAtomName/;
+        $lipidData{'zCenter'} += $$coordsRef[$_]{'cooZ'};
+        push(@headAtomIds, $_);
+    }
+    $lipidData{'zCenter'} /= scalar(@headAtomIds) if @headAtomIds;
+
+    $lipidData{'leaflets'} = detectLeaflets(\@headAtomIds, $coordsRef, $lipidData{'zCenter'});
+
+    return %lipidData;
+}
+
+
+
+sub detectLeaflets {
+    my $headAtomIdsRef = shift;
+    my $coordsRef      = shift;
+    my $bilayerCenterZ = shift;
+    my %leafletData;
+    $leafletData{'upper'}{'nLipids'} = 0;
+    $leafletData{'lower'}{'nLipids'} = 0;
+
+    foreach (@{$headAtomIdsRef}) {
+        if ($$coordsRef[$_]{'cooZ'} > $bilayerCenterZ) {
+            $leafletData{'upper'}{'uResIds'}[ $$coordsRef[$_]{'uResId'} ] = 1;
+            $leafletData{'upper'}{'headCooZAvg'} += $$coordsRef[$_]{'cooZ'};
+            $leafletData{'upper'}{'nLipids'}++;
+        }
+        else {
+            $leafletData{'lower'}{'uResIds'}[ $$coordsRef[$_]{'uResId'} ] = 1;
+            $leafletData{'lower'}{'headCooZAvg'} += $$coordsRef[$_]{'cooZ'};
+            $leafletData{'lower'}{'nLipids'}++;
+        }
+    }
+    $leafletData{'upper'}{'headCooZAvg'} /= $leafletData{'upper'}{'nLipids'} if $leafletData{'upper'}{'nLipids'};
+    $leafletData{'lower'}{'headCooZAvg'} /= $leafletData{'lower'}{'nLipids'} if $leafletData{'lower'}{'nLipids'};
+
+    return (\%leafletData);
+}
+################################################################################
+
+
+
+################################################################################
+### Protein routines ###########################################################
+################################################################################
+package Protein;
+
+sub analyzeProtein {
+    my $ndxDataRef      = shift;
+    my $protGroupId     = shift;
+    my $suGroupIdsRef   = shift;
+    my $coordsRef       = shift;
+    my $boxRef          = shift;
+    my $gridDelta       = shift;
+    my $zMin            = shift;
+    my $zMax            = shift;
+    my $extCavDetection = shift;
+    my $xyProfile       = shift;
+
+    my $gridRef;
+    my $gridsizeX = 0;
+    my $gridsizeY = 0;
+
+    my $gridAreaProtein;
+    my $gridAreaCavity;
+
+
+    ### Initialize grid ########################################################
+    ($gridRef, $gridsizeX, $gridsizeY) = iniGrid($boxRef, $gridDelta);
+    ############################################################################
+
+
+    ### Create protein grid ####################################################
+    $gridAreaProtein = protein2Grid($gridRef, $gridsizeX, $gridsizeY, $gridDelta, $$ndxDataRef[$protGroupId]{'atoms'}, $coordsRef, $zMin, $zMax);
+    ############################################################################
+
+
+    ### Connect subdomains to form a cavity ####################################
+    connectSubunits($gridRef, $gridsizeX, $gridsizeY, $gridDelta, $ndxDataRef, $suGroupIdsRef, $coordsRef, $zMin, $zMax) if $suGroupIdsRef;
+    ############################################################################
+
+
+    ### Detect the cavity ######################################################
+    $gridAreaCavity = detectCavity($gridRef, $gridsizeX, $gridsizeY, $gridDelta, , $extCavDetection);
+    ############################################################################
+
+
+    ### Write out the XY profile ###############################################
+    writeXyProfile ($xyProfile, $gridRef, $gridsizeX, $gridsizeY, $gridDelta) if $xyProfile;
+    ############################################################################
+
+    return ($gridAreaProtein, $gridAreaCavity, $gridRef);
+}
+
+
+
+sub iniGrid {
+    my $boxRef    = shift;
+    my $gridDelta = shift;
+
+    my @grid;
+    my $gridsizeX = int($$boxRef{'cooX'} / $gridDelta) + 1;
+    my $gridsizeY = int($$boxRef{'cooY'} / $gridDelta) + 1;
+
+    printf("      Create a %dx%d XY grid: 0%%\r", $gridsizeX, $gridsizeY) if $main::verbose;
+    for (my $x=0; $x<=$gridsizeX; $x++) {
+        printf("      Create a %dx%d XY grid: %d%%\r", $gridsizeX, $gridsizeY, 100*$x/$gridsizeX) if $main::verbose;
+        for (my $y=0; $y<=$gridsizeY; $y++) {
+            $grid[$x][$y] = 0;
+        }
+    }
+    printf("      Create a %dx%d XY grid: 100%%\n", $gridsizeX, $gridsizeY) if $main::verbose;
+    ############################################################################
+
+    return (\@grid, $gridsizeX, $gridsizeY);
+}
+
+
+
+sub protein2Grid {
+    my $gridRef     = shift;
+    my $gridsizeX   = shift;
+    my $gridsizeY   = shift;
+    my $gridDelta   = shift;
+    my $atomsIdsRef = shift;
+    my $coordsRef   = shift;
+    my $zMin        = shift;
+    my $zMax        = shift;
+
+    my $nAreas      = 0;
+    my $gridDelta2  = $gridDelta*$gridDelta;
+
+    print "      Mapping atoms to the grid: 0.000%\r" if $main::verbose;
+    foreach (@{$atomsIdsRef}) {
+        next unless $$coordsRef[$_]{'cooZ'};
+        next if $$coordsRef[$_]{'cooZ'} > $zMax;
+        next if $$coordsRef[$_]{'cooZ'} < $zMin;
+        printf("      Mapping atoms to the grid: %d%% (protein area %.4f nm^2)\r", (++$$coordsRef[$_]{'atomNum'})/scalar(@{$atomsIdsRef})*100, $nAreas*$gridDelta*$gridDelta) if $main::verbose;
+
+        my $element = substr($$coordsRef[$_]{'atomName'}, 0, 1);
+        my $radius  = PTE::getRadius($element);
+        my $radius2 = $radius * $radius;
+
+        my $tmpGridX = int($$coordsRef[$_]{'cooX'} / $gridDelta);
+        my $tmpGridY = int($$coordsRef[$_]{'cooY'} / $gridDelta);
+        my $subrange = int($radius / $gridDelta);
+
+        for (my $x=getMax($tmpGridX-$subrange, 0); $x<=getMin($tmpGridX+$subrange, $gridsizeX-1); $x++) {
+            for (my $y=getMax($tmpGridY-$subrange, 0); $y<=getMin($tmpGridY+$subrange, $gridsizeY-1); $y++) {
+                my $dx = $$coordsRef[$_]{'cooX'} - $x * $gridDelta;
+                my $dy = $$coordsRef[$_]{'cooY'} - $y * $gridDelta;
+                my $dist2 = $dx*$dx + $dy*$dy;
+                next if $dist2 > $radius2;
+                ++$nAreas unless $$gridRef[$x][$y];
+                $$gridRef[$x][$y] = 1;
+            }
+        }
+    }
+    printf("      Mapping atoms to the grid: 100%% (protein area %.4f nm^2)\n", $nAreas*$gridDelta2) if $main::verbose;
+
+    return ($nAreas*$gridDelta2);
+}
+
+
+
+sub connectSubunits {
+    my $gridRef       = shift;
+    my $gridsizeX     = shift;
+    my $gridsizeY     = shift;
+    my $gridDelta     = shift;
+    my $ndxDataRef    = shift;
+    my $suGroupIdsRef = shift;
+    my $coordsRef     = shift;
+    my $zMin          = shift;
+    my $zMax          = shift;
+
+    my @gridSuGeoCenter;
+
+
+    print "      Detecting subunit connections: 0.0000 nm^2 possible\r" if $main::verbose;
+
+    ### Calculate center of mass of each protein subunit on the grid ###########
+    foreach my $suGroupId (@{$suGroupIdsRef}) {
+        my %tmpSum = ('cooX' => 0, 'cooY' => 0);
+        my $nAtoms = 0;
+        foreach (@{$ndxData[$suGroupId]{'atoms'}}) {
+            next unless $$coordsRef[$_]{'cooZ'};
+            next if $$coordsRef[$_]{'cooZ'} > $zMax;
+            next if $$coordsRef[$_]{'cooZ'} < $zMin;
+            $tmpSum{'cooX'} += $$coordsRef[$_]{'cooX'};
+            $tmpSum{'cooY'} += $$coordsRef[$_]{'cooY'};
+            $nAtoms++;
+        }
+        next unless $nAtoms;
+        $tmpSum{'cooX'} = int(($tmpSum{'cooX'}/$nAtoms)/$gridDelta);
+        $tmpSum{'cooY'} = int(($tmpSum{'cooY'}/$nAtoms)/$gridDelta);
+        push(@gridSuGeoCenter, \%tmpSum);
+    }
+    ############################################################################
+
+
+    ### Print the geometrical center of each subunit ###########################
+    for (my $i=0; $i<@gridSuGeoCenter; $i++) {
+        getGridSlope($gridRef, $gridSuGeoCenter[$i-1], $gridSuGeoCenter[$i]);
+    }
+    ############################################################################
+}
+
+
+
+# This does not work for all cases. Replace this routine by a vector based method.
+sub getGridSlope {
+    my $gridRef   = shift;
+    my $vecARef   = shift;
+    my $vecBRef   = shift;
+
+    my $slope = ($$vecARef{'cooY'} - $$vecBRef{'cooY'}) / ($$vecARef{'cooX'} - $$vecBRef{'cooX'});
+    my $xMin;
+    my $xMax;
+    my $yMin;
+
+    if ($$vecARef{'cooX'} < $$vecBRef{'cooX'}) {
+        $xMin = $$vecARef{'cooX'};
+        $yMin = $$vecARef{'cooY'};
+
+        $xMax = $$vecBRef{'cooX'};
+    }
+    else {
+        $xMin = $$vecBRef{'cooX'};
+        $yMin = $$vecBRef{'cooY'};
+
+        $xMax = $$vecARef{'cooX'};
+    }
+
+    if ($slope > 3) {
+        $xMin = $$vecARef{'cooY'};
+        $yMin = $$vecARef{'cooX'};
+
+        $xMax = $$vecBRef{'cooY'};
+    }
+
+    #if ($$vecARef{'cooX'} > $$vecBRef{'cooX'}) {
+    #    $xMax = $$vecARef{'cooX'};
+    #}
+    #else {
+    #    $xMax = $$vecBRef{'cooX'};
+    #}
+
+    for (my $x=$xMin; $x<=$xMax; $x++) {
+        $yMin += $slope;
+        my $intY = main::round($yMin, 1);
+        next if $$gridRef[$x][$intY];
+        $$gridRef[$x][$intY] = 3;
+
+        $$gridRef[$x+1][$intY] = 3;
+        $$gridRef[$x-1][$intY] = 3;
+        $$gridRef[$x][$intY+1] = 3;
+        $$gridRef[$x][$intY-1] = 3;
+        $$gridRef[$x+1][$intY+1] = 3;
+        $$gridRef[$x+1][$intY-1] = 3;
+        $$gridRef[$x-1][$intY+1] = 3;
+        $$gridRef[$x-1][$intY-1] = 3;
+    }
+}
+
+
+
+sub detectCavity {
+    my $gridRef         = shift;
+    my $gridsizeX       = shift;
+    my $gridsizeY       = shift;
+    my $gridDelta       = shift;
+    my $extCavDetection = shift;
+
+    my $nCavityAreas  = 0;
+    my $gridDelta2    = $gridDelta*$gridDelta;
+
+
+    print "      Detecting protein internal cavities: 0.0000 nm^2 possible\r" if $main::verbose;
+    ### Invert protein grid (set all empty grid points to 2 (poss. cav.)) ######
+    for (my $x=0; $x<=$gridsizeX; $x++) {
+        for (my $y=0; $y<=$gridsizeY; $y++) {
+            next if $$gridRef[$x][$y]; # Next loop if this grid point is defined as protein.
+            $$gridRef[$x][$y] = 2;
+            $nCavityAreas++;
+        }
+        printf("      Detecting protein internal cavities: %.4f nm^2 possible      \r", $nCavityAreas*$gridDelta2) if $main::verbose;
+    }
+    ############################################################################
+
+
+    ### Washing out the cavities ###############################################
+    for (my $i=0; $i<2; $i++) {
+        my $foundExcl1 = 1;
+        my $foundExcl2 = 1;
+        for (my $x=0; $x<=$gridsizeX; $x++) {
+            my $neighbCellX = $x - 1;
+            $nCavityAreas -= $foundExcl1 = washingOutY($x, $neighbCellX, $gridsizeY, $gridRef, $extCavDetection);
+            printf("      Detecting protein internal cavities: %.4f nm^2 possible      \r", $nCavityAreas*$gridDelta2) if $main::verbose;
+        }
+
+        for (my $x=$gridsizeX; $x>=0; $x--) {
+            my $neighbCellX = $x + 1;
+            $nCavityAreas -= $foundExcl2 = washingOutY($x, $neighbCellX, $gridsizeY, $gridRef, $extCavDetection);
+            printf("      Detecting protein internal cavities: %.4f nm^2 possible      \r", $nCavityAreas*$gridDelta2) if $main::verbose;
+        }
+        $i = 0 if $foundExcl1 || $foundExcl2;
+    }
+    ############################################################################
+    printf("      Detecting protein internal cavities: %.4f nm^2 detected      \n", $nCavityAreas*$gridDelta2) if $main::verbose;
+
+    return ($nCavityAreas*$gridDelta2);
+}
+
+
+
+sub washingOutY {
+    my $x               = shift;
+    my $neighbCellX     = shift;
+    my $gridsizeY       = shift;
+    my $gridRef         = shift;
+    my $extCavDetection = shift;
+
+    my $delAreas        = 0;
+
+    for (my $y=0; $y<=$gridsizeY; $y++) { # SW -> NE.
+        my $neighbCellY = $y - 1;
+        next unless $$gridRef[$x][$y] == 2; # Next if this grid point is not a possible cavity.
+        unless ($$gridRef[$x][$neighbCellY]) { # If the neighbored cell is not protein or not a possible cavity...
+            $$gridRef[$x][$y] = 0; # ...exclude this from a possible cavity.
+            $delAreas++;
+            next;
+        }
+        unless ($$gridRef[$neighbCellX][$y]) {
+            $$gridRef[$x][$y] = 0;
+            $delAreas++;
+            next;
+        }
+
+        next unless $extCavDetection;
+        unless ($$gridRef[$neighbCellX][$neighbCellY]) {
+            $$gridRef[$x][$y] = 0;
+            $delAreas++;
+        }
+    }
+
+    for (my $y=$gridsizeY; $y>=0; $y--) { # NW -> SE.
+        my $neighbCellY = $y + 1;
+        next unless $$gridRef[$x][$y] == 2;
+        unless ($$gridRef[$x][$neighbCellY]) {
+            $$gridRef[$x][$y] = 0;
+            $delAreas++;
+            next;
+        }
+        unless ($$gridRef[$neighbCellX][$y]) {
+            $$gridRef[$x][$y] = 0;
+            $delAreas++;
+            next;
+        }
+
+        next unless $extCavDetection;
+        unless ($$gridRef[$neighbCellX][$neighbCellY]) {
+            $$gridRef[$x][$y] = 0;
+            $delAreas++;
+        }
+    }
+
+    return $delAreas;
+}
+
+
+
+sub writeXyProfile {
+    my $xyProfile = shift;
+    my $gridRef   = shift;
+    my $gridsizeX = shift;
+    my $gridsizeY = shift;
+    my $gridDelta = shift;
+
+    printf("      Writing out protein xy grid profile: 0%%\r") if $main::verbose;
+    open(XYPROFILE, ">$xyProfile") || die "ERROR: Cannot open profile output file \"$xyProfile\": $!\n";
+    for (my $x=0; $x<=$gridsizeX; $x++) {
+        my $tmpX = $x*$gridDelta; # Performance.
+        for (my $y=0; $y<=$gridsizeY; $y++) {
+            printf(XYPROFILE "%f %f %d\n", $tmpX, $y*$gridDelta, $$gridRef[$x][$y]) if $$gridRef[$x][$y];
+        }
+        printf("      Writing out protein xy grid profile: %d%%\r", 100*$x/$gridsizeX) if $main::verbose;
+    }
+    close XYPROFILE;
+    printf("      Writing out protein xy grid profile: 100%%\n") if $main::verbose;
+}
+
+
+
+sub getMax {
+    return $_[0] if $_[0] > $_[1];
+    return $_[1];
+}
+
+
+
+sub getMin {
+    return $_[0] if $_[0] < $_[1];
+    return $_[1];
+}
+################################################################################
+
+
+
+################################################################################
+### Periodic Table of the Elements routines ####################################
+################################################################################
+package PTE;
+
+sub getRadius {
+    my %atomRadius = ('H'  => 0.110,
+                      'He' => 0.140,
+                      'Li' => 0.182,
+                      'Be' => 0.153,
+                      'B'  => 0.192,
+                      'C'  => 0.170,
+                      'N'  => 0.155,
+                      'O'  => 0.152,
+                      'F'  => 0.147,
+                      'Ne' => 0.154,
+                      'Na' => 0.227,
+                      'Mg' => 0.173,
+                      'Al' => 0.184,
+                      'Si' => 0.210,
+                      'P'  => 0.180,
+                      'S'  => 0.180,
+                      'Cl' => 0.175,
+                      'Ar' => 0.188,
+                      'K'  => 0.275,
+                      'Ca' => 0.231,
+                      'Ni' => 0.163,
+                      'Cu' => 0.140,
+                      'Zn' => 0.139,
+                      'Ga' => 0.187,
+                      'Ge' => 0.211,
+                      'As' => 0.185,
+                      'Se' => 0.190,
+                      'Br' => 0.185,
+                      'Kr' => 0.202,
+                      'Rb' => 0.303,
+                      'Sr' => 0.249,
+                      'Pd' => 0.163,
+                      'Ag' => 0.172,
+                      'Cd' => 0.158,
+                      'In' => 0.193,
+                      'Sn' => 0.217,
+                      'Sb' => 0.206,
+                      'Te' => 0.206,
+                      'I'  => 0.198,
+                      'Xe' => 0.216,
+                      'Cs' => 0.343,
+                      'Ba' => 0.268,
+                      'Pt' => 0.175,
+                      'Au' => 0.166,
+                      'Hg' => 0.155,
+                      'Tl' => 0.196,
+                      'Pb' => 0.202,
+                      'Bi' => 0.207,
+                      'Po' => 0.197,
+                      'At' => 0.202,
+                      'Rn' => 0.220,
+                      'Fr' => 0.348,
+                      'Ra' => 0.283,
+                      'U'  => 0.186);
+
+    return $atomRadius{$_[0]} if $atomRadius{$_[0]};
+    return 0;
+
+# Atomic van der Waals radii in nm.
+#    1) R. Scott Rowland, Robin Taylor: Intermolecular Nonbonded Contact
+#       Distances in Organic Crystal Structures: Comparison with Distances
+#       Expected from van der Waals Radii. In: J. Phys. Chem. 1996, 100,
+#       S. 7384–7391, doi:10.1021/jp953141+.
+#    2) A. Bondi: van der Waals Volumes and Radii. In: J. Phys. Chem. 1964, 68,
+#       S. 441-451, doi:10.1021/j100785a001.
+#    3) Manjeera Mantina, Adam C. Chamberlin, Rosendo Valero, Christopher J.
+#       Cramer, Donald G. Truhlar: Consistent van der Waals Radii for the Whole
+#       Main Group. In: J. Phys. Chem. A. 2009, 113, S. 5806–5812,
+#       doi:10.1021/jp8111556.
+}
+################################################################################
+
+
+
+################################################################################
+### GROFiles  ##################################################################
+################################################################################
+package GROFiles;
+
+sub readGro {
+    my $groFile = shift;
+    my %groData;
+
+    print "  ---------------------------------\n  Read GRO file \"$groFile\"...\r";
+    open(GROFILE, "<$groFile") || die "ERROR: Cannot open GRO file \"$groFile\": $!\n";
+    readHeader(\*GROFILE, \%groData);
+    readCoords(\*GROFILE, \%groData);
+    readFooter(\*GROFILE, \%groData);
+    close(GROFILE);
+    print "  Read GRO file \"$groFile\": Finished\n  ---------------------------------\n\n";
+
+    return %groData;
+}
+
+
+
+sub readHeader {
+    my $fileHandle = shift;
+    my $groDataRef = shift;
+
+    $$groDataRef{'title'}  = <$fileHandle>;
+    $$groDataRef{'title'}  =~ s/(^\s*)|(\s*$)//g;
+    $$groDataRef{'nAtoms'} = <$fileHandle>;
+    $$groDataRef{'nAtoms'} =~ s/\s//g;
+
+    print "\n    Number of atoms: " . $$groDataRef{'nAtoms'} . "\n" if $main::verbose;
+}
+
+
+
+sub readFooter {
+    my $fileHandle = shift;
+    my $groDataRef = shift;
+
+    $$groDataRef{'footline'} = <$fileHandle>;
+    $$groDataRef{'footline'} =~ s/(^\s*)|(\s*$)//g;
+    if ($$groDataRef{'footline'} =~ /([-+]?\d*\.?\d+([eE][-+]?\d+)?)\s+([-+]?\d*\.?\d+([eE][-+]?\d+)?)\s+([-+]?\d*\.?\d+([eE][-+]?\d+)?)/) {
+        $$groDataRef{'box'}{'cooX'} = $1;
+        $$groDataRef{'box'}{'cooY'} = $3;
+        $$groDataRef{'box'}{'cooZ'} = $5;
+
+        print "\n    Boxsize: x=$1, y=$3, z=$5\n" if $main::verbose;
+    }
+}
+
+
+
+sub readCoords {
+    my $fileHandle = shift;
+    my $groDataRef = shift;
+    my $atomId     = 0;
+    my $uResId     = 0; # The unique residue ID.
+    my $lastResId  = 0;
+
+    while (<$fileHandle>) {
+        chomp($_);
+        unless ($_ =~ /^\s*$/) {
+            $$groDataRef{'atoms'}[++$atomId] = getAtomdata($_);
+            $uResId++ unless $lastResId == $$groDataRef{'atoms'}[$atomId]{'resId'};
+            $$groDataRef{'atoms'}[$atomId]{'uResId'} = $uResId;
+            $lastResId = $$groDataRef{'atoms'}[$atomId]{'resId'};
+        }
+        print "    Read atom data:  $atomId\r" if $main::verbose;    
+        return 1 if ($atomId == $$groDataRef{'nAtoms'});
+    }
+    return 0; # If file ends before all atoms were count.
+}
+
+
+
+sub getAtomdata {
+    my $atomStr = shift;
+    my $strLen  = length($atomStr);
+    my %atomData;
+
+    $atomData{'resId'}    = checkSubstr($atomStr, $strLen,  0, 5);
+    $atomData{'resName'}  = checkSubstr($atomStr, $strLen,  5, 5);
+    $atomData{'atomName'} = checkSubstr($atomStr, $strLen, 10, 5);
+    $atomData{'atomNum'}  = checkSubstr($atomStr, $strLen, 15, 5);
+    $atomData{'cooX'}     = checkSubstr($atomStr, $strLen, 20, 8);
+    $atomData{'cooY'}     = checkSubstr($atomStr, $strLen, 28, 8);
+    $atomData{'cooZ'}     = checkSubstr($atomStr, $strLen, 36, 8);
+    $atomData{'velX'}     = checkSubstr($atomStr, $strLen, 44, 8);
+    $atomData{'velY'}     = checkSubstr($atomStr, $strLen, 52, 8);
+    $atomData{'velZ'}     = checkSubstr($atomStr, $strLen, 60, 8);
+
+    return \%atomData;
+}
+
+
+
+sub checkSubstr {
+    my $str       = shift;
+    my $strLen    = shift;
+    my $start     = shift;
+    my $substrLen = shift;
+    my $substr    = '';
+
+    if ($strLen >= ($start+$substrLen)) {
+        $substr = substr($str, $start, $substrLen);
+        $substr =~ s/\s//g;
+    }
+    return $substr;
+}
+
+
+
+sub writeGro {
+    my $groFile    = shift;
+    my $groDataRef = shift;
+
+    $groFile .= ".gro" unless $groFile =~ /\.gro$/;
+
+    open(GROFILE, ">$groFile") || die "ERROR: Cannot open output GRO file ($groFile): $!\n";
+    writeHeader(\*GROFILE, $groDataRef);
+    writeCoords(\*GROFILE, $groDataRef);
+    writeFooter(\*GROFILE, $groDataRef);
+    close(GROFILE);
+}
+
+
+
+sub writeHeader {
+    my $fileHandle = shift;
+    my $groDataRef = shift;
+
+    print $fileHandle $$groDataRef{'title'} . "\n";
+    print $fileHandle $$groDataRef{'nAtoms'} . "\n";
+}
+
+
+
+sub writeCoords {
+    my $fileHandle = shift;
+    my $groDataRef = shift;
+
+    foreach (@{$$groDataRef{'atoms'}}) {
+        next unless $$_{'uResId'};
+        printf($fileHandle "%5d%-5s%5s%5d%8.3f%8.3f%8.3f\n",
+            ($$_{'uResId'}%100000), $$_{'resName'}, $$_{'atomName'}, ($$_{'atomNum'}%100000), $$_{'cooX'}, $$_{'cooY'}, $$_{'cooZ'});
+    }
+}
+
+
+
+sub writeFooter {
+    my $fileHandle = shift;
+    my $groDataRef = shift;
+
+    printf($fileHandle "  %8.3f  %8.3f  %8.3f\n", $$groDataRef{'box'}{'cooX'}, $$groDataRef{'box'}{'cooY'}, $$groDataRef{'box'}{'cooZ'});
+}
+################################################################################
+
+
+
+################################################################################
+### PDBFiles  ##################################################################
+################################################################################
+package PDBFiles;
+
+sub readPdb {
+    my $pdbFile = shift;
+    my %pdbData;
+
+    print "  ---------------------------------\n  Read PDB file \"$pdbFile\"...\r";
+    open(PDBFILE, "<$pdbFile") || die "ERROR: Cannot open PDB file \"$pdbFile\": $!\n";
+    readCoords(\*PDBFILE, \%pdbData);
+    close(PDBFILE);
+    print "  Read PDB file \"$pdbFile\": Finished\n  ---------------------------------\n\n";
+
+    return %pdbData;
+}
+
+
+
+sub readCoords {
+    my $fileHandle = shift;
+    my $pdbDataRef = shift;
+    my $atomId     = 0;
+    my $uResId     = 0; # The unique residue ID.
+
+    while (<$fileHandle>) {
+        chomp($_);
+        $$pdbDataRef{'atoms'}[++$atomId] = getAtomdata($_) if ($_ =~ /^ATOM\s+/);
+        $$pdbDataRef{'atoms'}[$atomId]{'uResId'} = $uResId++ unless ($_ =~ /^ATOM\s+/);
+        print "    Read atom data:  $atomId\r" if $main::verbose;
+    }
+    return 1;
+}
+
+
+
+sub getAtomdata {
+    my $atomStr = shift;
+    my $strLen  = length($atomStr);
+    my %atomData;
+
+    $atomData{'atomNum'}    = checkSubstr($atomStr, $strLen, 6, 5);
+    $atomData{'atomName'}   = checkSubstr($atomStr, $strLen, 12, 4);
+    $atomData{'altLoc'}     = checkSubstr($atomStr, $strLen, 16, 1);
+    $atomData{'resName'}    = checkSubstr($atomStr, $strLen, 17, 3);
+    $atomData{'chainID'}    = checkSubstr($atomStr, $strLen, 21, 1);
+    $atomData{'resId'}      = checkSubstr($atomStr, $strLen, 22, 4);
+    $atomData{'iCode'}      = checkSubstr($atomStr, $strLen, 26, 1);
+    $atomData{'cooX'}       = checkSubstr($atomStr, $strLen, 30, 8);
+    $atomData{'cooY'}       = checkSubstr($atomStr, $strLen, 38, 8);
+    $atomData{'cooZ'}       = checkSubstr($atomStr, $strLen, 46, 8);
+    $atomData{'occupancy'}  = checkSubstr($atomStr, $strLen, 54, 6);
+    $atomData{'tempFactor'} = checkSubstr($atomStr, $strLen, 60, 6);
+    $atomData{'element'}    = checkSubstr($atomStr, $strLen, 76, 2);
+    $atomData{'charge'}     = checkSubstr($atomStr, $strLen, 78, 2);
+
+    return \%atomData;
+}
+
+
+
+sub checkSubstr {
+    my $str       = shift;
+    my $strLen    = shift;
+    my $start     = shift;
+    my $substrLen = shift;
+    my $substr    = '';
+
+    if ($strLen >= ($start+$substrLen)) {
+        $substr = substr($str, $start, $substrLen);
+        $substr =~ s/\s//g;
+    }
+    return $substr;
+}
+
+
+
+sub writePdb {
+    my $pdbFile    = shift;
+    my $pdbDataRef = shift;
+
+    $pdbFile .= ".pdb" unless $pdbFile =~ /\.pdb$/;
+
+    open(PDBFILE, ">$pdbFile") || die "ERROR: Cannot open output PDB file ($pdbFile): $!\n";
+    writeCoords(\*PDBFILE, $pdbDataRef);
+    close(PDBFILE);
+}
+
+
+
+sub writeCoords {
+    my $fileHandle = shift;
+    my $pdbDataRef = shift;
+
+    my $atomId     = 1;
+
+    my %defaultAtom = ("atomNum"    => 0,
+                       "atomName"   => "X",
+                       "altLoc"     => "",
+                       "resName"    => "RES",
+                       "chainId"    => 0,
+                       "resId"      => 0,
+                       "iCode"      => "",
+                       "cooX"       => 0.0,
+                       "cooY"       => 0.0,
+                       "cooZ"       => 0.0,
+                       "occupancy"  => 0.0,
+                       "tempFactor" => 0.0,
+                       "element"    => "X",
+                       "charge"     => "0");
+
+    foreach (@{$$pdbDataRef{'atoms'}}) {
+        next unless $$_{'uResId'};
+
+        ### Fill empty fields with standard parameters #########################
+        foreach my $key (keys %defaultAtom) {
+            $$_{$key} = $defaultAtom{$key} unless defined($$_{$key});
+        }
+        ########################################################################
+        $$_{'element'} = substr($$_{'atomName'}, 0, 1) if $$_{'element'} eq 'X';
+
+        printf($fileHandle "ATOM  %5d %4s%1s%4s%1s%4d%1s   %8.3f%8.3f%8.3f%6.2f%6s          %2s%2s\n",
+            (($atomId++)%100000), $$_{'atomName'}, $$_{'altLoc'}, $$_{'resName'}, $$_{'chainId'}, ($$_{'resId'}%100000),  $$_{'iCode'}, ($$_{'cooX'}*10), ($$_{'cooY'}*10), ($$_{'cooZ'}*10), $$_{'occupancy'}, substr(sprintf("%6.2f", $$_{'tempFactor'}), 0, 6), $$_{'element'}, $$_{'charge'});
+    }
+}
+################################################################################
+
+
+
+###############################################################################
+### NDXFiles ##################################################################
+###############################################################################
+package NDXFiles;
+
+sub readNdx {
+    my $ndxFile = shift;
+    my @ndxData;
+    my $groupId = -1;
+    
+    my $tmpAtomList = '';
+
+    print "  ---------------------------------\n  Read NDX file \"$ndxFile\"...\r";
+    print "\n" if $main::verbose;
+    open(NDXFILE, "<$ndxFile") || die "ERROR: Cannot open NDX file \"$ndxFile\": $!\n";
+    while (<NDXFILE>) {
+        if ($_ =~ /^\s*((\d+\s+)+)/) {
+            my @tmpArray = split(/\s+/, $1);
+            push(@{$ndxData[$groupId]{'atoms'}}, @tmpArray);
+        }
+        elsif ($_ =~ /^\s*\[\s*(.+?)\s*\]\s*$/) {
+            $ndxData[++$groupId]{'groupName'} = $1;
+            @{$ndxData[$groupId]{'atoms'}} = ();
+            print "    Found " . ($groupId + 1) . " groups\r" if $main::verbose;
+        }
+    }
+    print "\n" if $main::verbose;
+    close NDXFILE;
+    print "  Read NDX file \"$ndxFile\": Finished\n  ---------------------------------\n\n";
+
+    return @ndxData;
+}
+
+
+
+sub printNdxGroups {
+    for (my $i=0; $i<@_; $i++) {
+        next unless $_[$i]{'groupName'} . "\n";
+        printf("%3d %-20s: %5d atoms\n", $i, $_[$i]{'groupName'}, scalar(@{$_[$i]{'atoms'}}));
+    }
+}
+
+
+
+sub updateNdxData {
+    my $ndxDataRef     = shift;
+    my $renumMatrixRef = shift;
+    my @newNdxData;
+
+    for (my $groupId=0; $groupId<@{$ndxDataRef}; $groupId++) {
+        $newNdxData[$groupId]{'groupName'} = $$ndxDataRef[$groupId]{'groupName'};
+    }
+
+    my @atomNdxGroups = getAtomNdxGroups($ndxDataRef);
+    for (my $i=0; $i<@atomNdxGroups; $i++) {
+        if ($$renumMatrixRef[$i]) {
+            foreach (@{$atomNdxGroups[$i]}) {
+                push(@{$newNdxData[$_]{'atoms'}}, $$renumMatrixRef[$i]);
+            }
+        }
+    }
+    return @newNdxData;
+}
+
+
+
+sub getAtomNdxGroups {
+    my $ndxDataRef = shift;
+    my @atomNdxGroups;
+
+    for (my $groupId=0; $groupId<@{$ndxDataRef}; $groupId++) {
+        foreach (@{$$ndxDataRef[$groupId]{'atoms'}}) {
+            push(@{$atomNdxGroups[$_]}, $groupId);
+        }
+    }
+    return @atomNdxGroups;
+}
+
+
+
+sub writeNdx {
+    my $ndxFile    = shift;
+    my $ndxDataRef = shift;
+
+    open(NDXFILE, ">$ndxFile") or die "ERROR: Cannot open output NDX file ($ndxFile): $!\n";
+    for (my $groupId=0; $groupId<@{$ndxDataRef}; $groupId++) {
+        printf(NDXFILE "[ %s ]", $$ndxDataRef[$groupId]{'groupName'});
+        next unless $$ndxDataRef[$groupId]{'atoms'};
+
+        for (my $i=0; $i<@{$$ndxDataRef[$groupId]{'atoms'}}; $i++) {
+            $i % 15 ? print NDXFILE " " : print NDXFILE "\n";
+            printf(NDXFILE "%4d", $$ndxDataRef[$groupId]{'atoms'}[$i]);
+        }
+        print NDXFILE "\n";
+        print NDXFILE "\n" unless @{$$ndxDataRef[$groupId]{'atoms'}};
+    }
+    close NDXFILE;
+}
+################################################################################
+
+
+
+################################################################################
+### TOPFiles  ##################################################################
+################################################################################
+package TOPFiles;
+
+sub readTop {
+    my $topFile = shift;
+    my %topData;
+
+    print "  ---------------------------------\n  Read TOP file \"$topFile\"...\r";
+    open(TOPFILE, "<$topFile") || die "ERROR: Cannot open TOP file \"$topFile\": $!\n";
+    readData(\*TOPFILE, \%topData);
+    close(TOPFILE);
+    print "  Read TOP file \"$topFile\": Finished\n  ---------------------------------\n\n";
+
+    return %topData;
+}
+
+
+
+sub readData {
+    my $fileHandle = shift;
+    my $topDataRef = shift;
+    my $molSwitch  = 0;
+
+    while (<$fileHandle>) {
+        chomp($_);
+        push(@{$$topDataRef{'include'}}, $1) if $_ =~ /^\s*#include\s+"(.+)"/;
+        $molSwitch = 0 if $molSwitch && $_ =~ /^\s*\[.+\]"/;
+        $$topDataRef{'molecules'}{$1} = $2 if $molSwitch && $_ =~ /^\s*(\w+)\s+(\d+)/;
+        $molSwitch = 1 if $_ =~ /^\s*\[ molecules \]/;
+    }
+    printf("\n    Read files for inclusion: %d\n", scalar @{$$topDataRef{'include'}}) if $main::verbose;
+    printf("    Number of molecule types: %d\n", scalar keys %{$$topDataRef{'molecules'}}) if $main::verbose;
+}
+
+
+
+sub updateTop {
+    my $topFile = shift;
+    my $molType = shift;
+    my $molNum  = shift;
+
+    my $backupFile = main::fileBackup($topFile);
+    open(BUTOPFILE, "<$backupFile") || die "ERROR: Cannot open TOP file \"$topFile\": $!\n";
+    open(TOPFILE, ">$topFile") || die "ERROR: Cannot open TOP file \"$topFile\": $!\n";
+    while (<BUTOPFILE>) {
+        $_ = sprintf("%-14s %6d\n", $molType, $molNum) if $_ =~ /^\s*$molType/;
+        print TOPFILE $_;
+    }
+    close(TOPFILE);
+    close(BUTOPFILE);
+}
+################################################################################
+
+
+
+################################################################################
+### ITPFiles  ##################################################################
+################################################################################
+package ITPFiles;
+
+sub readItp {
+    my $itpFile = shift;
+    my %itpData;
+
+    print "  ---------------------------------\n  Read ITP file \"$itpFile\"...\r";
+    open(ITPFILE, "<$itpFile") || die "ERROR: Cannot open ITP file \"$itpFile\": $!\n";
+    readData(\*ITPFILE, \%topData);
+    close(ITPFILE);
+    print "  Read ITP file \"$itpFile\": Finished\n  ---------------------------------\n\n";
+
+    return %itpData;
+}
+
+
+
+sub readData {
+    my $fileHandle = shift;
+    my $itpDataRef = shift;
+    my $atomsSwitch = 0;
+
+    while (<$fileHandle>) {
+        chomp($_);
+
+        $atomsSwitch = 0 if $atomsSwitch && $_ =~ /^\s*\[.+\]/;
+        $$itpDataRef{'atoms'} = getAtomdata($_) if $atomsSwitch;
+        $atomsSwitch = 1 if $_ =~ /^\s*\[ atoms \]/;
+#        $$pdbDataRef{'atoms'}[++$atomId] = getAtomdata($_) if ($_ =~ /^ATOM\s+$/);
+#        print "    Read atom data:  $atomId\r" if $main::verbose;
+    }
+#    printf("\n    Read files for inclusion: %d\n", scalar @{$$topDataRef{'include'}}) if $main::verbose;
+#    printf("    Number of molecule types: %d\n", scalar keys %{$$topDataRef{'molecules'}}) if $main::verbose;
+}
+
+
+sub getAtomdata {
+    my $atomStr = shift;
+    my %atomData;
+
+    if ($atomStr =~ /^\s*(\d+)\s+(\w+)\s+(\d+)\s+(\w{3,4})/) {
+        print $4 . " ";
+    }
+
+    return \%atomData;
+}
+
+
+
+sub resname2moltype {
+    my $itpFile = shift;
+    my $resName = shift;
+    my $molType;
+    my $switch = "";
+
+    open(ITPFILE, "<$itpFile") || warn "ERROR: Cannot open ITP file \"$itpFile\": $!\n";
+    while (<ITPFILE>) {
+        chomp($_);
+
+        if ($switch eq "atoms" && $_ =~ /^\s*(\d+)\s+(\w+)\s+(\d+)\s+(\w{3,4})/) {
+            return $molType if $4 eq $resName;
+        }
+        elsif ($switch eq "moleculetype" && $_ =~ /^\s*(\w+)\s+(\d)/) {
+            $molType = $1;
+        }
+        $switch = $1 if $_ =~ /^\s*\[\s*(\w+)\s*\]/;
+    }
+    close(ITPFILE);
+
+    return 0;
+}
+################################################################################
+
+
+
+###############################################################################
+### APLFiles  (APL = area per lipid) ##########################################
+###############################################################################
+package APLFiles;
+
+sub writeApl {
+    my $aplFile    = shift;
+    my $aplDataRef = shift;
+
+    my $isNewFile = (-e $aplFile) ? 0 : 1;
+    open(APLFILE, ">>$aplFile") || die "ERROR: Cannot open area per lipid output file \"$aplFile\": $!\n";
+    print APLFILE "# Group-ID | Group-Name | Area/lipid (upper leaflet) | Area/lipid (lower leaflet) | Apl(average [both leaflets])\n" if $isNewFile;
+    printf APLFILE ("%10d | %10s", $$aplDataRef{'groupId'}, $$aplDataRef{'groupName'});
+    printf APLFILE (" | %f", $$aplDataRef{'upper'}) if $$aplDataRef{'upper'};
+    printf APLFILE (" | %f", $$aplDataRef{'lower'}) if $$aplDataRef{'lower'};
+    printf APLFILE (" | %f", $$aplDataRef{'average'}) if $$aplDataRef{'average'};
+    print APLFILE "\n";
+    close(APLFILE);
+}
+################################################################################
