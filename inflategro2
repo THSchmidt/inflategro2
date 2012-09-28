@@ -971,11 +971,11 @@ sub printHead {
 
                                 InflateGRO2 $version
                   Inflate lipid bilayers for protein insertion
-               (C) Thomas H. Schmidt & Christian Kandt, 2011-$year
+               (C) Thomas H. Schmidt & Christian Kandt, 2012
 
-                         http://www.csb.bit.uni-bonn.de
+                     http://code.google.com/p/inflategro2
 
-                 InflateGRO comes with ABSOLUTELY NO WARRANTY.
+                 InflateGRO2 comes with ABSOLUTELY NO WARRANTY.
           This is free software, and you are welcome to redistribute it
             under certain conditions; type `--copyright' for details.
 
