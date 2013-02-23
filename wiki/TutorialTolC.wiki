@@ -27,7 +27,7 @@ For executing this tutorial one-to-one you need the following system configurati
 
 == Protein preparation ==
 
-*Download* the protein structure from the RCSB Protein Databank (PDB):
+*Download* the TolC structure `[1]` from the RCSB Protein Databank (PDB):
 <code language="bash">
 wget "http://www.rcsb.org/pdb/download/downloadFile.do?fileFormat=pdb&compression=NO&structureId=1EK9" -O 1ek9.pdb</code>
 
@@ -53,7 +53,7 @@ echo 1 | pdb2gmx -f tolc.nowater.pdb -p tolc.top -i posre.tolc -o tolc.gro -ff g
 
 == Bilayer preparation ==
 
-*Download* the pre-equilibrated bilayer patch and corresponding force field parameters from the ATB website:
+*Download* the pre-equilibrated bilayer patch and corresponding force field parameters from the ATB website `[2]`:
 <code language="bash">
 wget "http://compbio.biosci.uq.edu.au/atb/download.py?molid=1506&file=rtp_uniatom" -O popc.temp.itp
 wget "http://compbio.biosci.uq.edu.au/atb/download.py?boxid=31&file=box_gro" -O popc.gro</code>
@@ -149,3 +149,9 @@ genion -f tolc.inwater.tpr -p tolc.top -o tolc.withions.gro</code>
 
 We recommend a short NVT run of 500 ps to solvate protein and lipid headgroups before executing a membrane equilibration (NPT, semi-isotropic) of 20 ns.
 For both equilibration steps the protein coordinates should be fixed using C-alpha position restraints of 1000 kJ mol^-1^ nm^-2^.
+
+
+= References =
+`[1]` Koronakis, V., A. Sharff, E. Koronakis, B. Luisi, und C. Hughes. „Crystal structure of the bacterial membrane protein TolC central to multidrug efflux and protein export“. Nature 405, Nr. 6789 (2000): 914–919.
+
+`[2]` Malde, Alpeshkumar K., Le Zuo, Matthew Breeze, Martin Stroet, David Poger, Pramod C. Nair, Chris Oostenbrink, und Alan E. Mark. „An Automated Force Field Topology Builder (ATB) and Repository: Version 1.0“. J. Chem. Theory Comput. 7, Nr. 12 (2011): 4026–4037.
