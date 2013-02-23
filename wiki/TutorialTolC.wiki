@@ -2,7 +2,7 @@
 
 = Tutorial for embedding TolC =
 
-The E. coli outer membrane exit duct TolC is an essential part of antimicrobial drug resistance mechanisms since it forms a continuous channel, which allows a direct efflux of transported substrates by other proteins (e.g. AcrB) from the periplasm to the cell exterior.
+The _E. coli_ outer membrane exit duct TolC is an essential part of antimicrobial drug resistance mechanisms since it forms a continuous channel, which allows a direct efflux of transported substrates by other proteins (e.g. AcrB) from the periplasm to the cell exterior.
 TolC has been chosen for this tutorial because of its weak conical transmembrane shape which is critical in preserving optimal lipid densities in both bilayer leaflets during the embedding procedure.
 
 
