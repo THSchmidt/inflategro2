@@ -2,10 +2,10 @@
 
 = Example Applications for Membrane Protein System Setup =
 
-We provide tutorials for the system setup of a set of representative membrane proteins:
+We provide tutorials for the system setup of a set of the following membrane proteins:
 
 || *Protein* || *PDB-ID* || *n,,residues,,* || *TM`*` structure* || *TM`*` cavity* || *Link* ||
-|| OmpX || [http://www.rcsb.org/pdb/explore.do?structureId=1qj9 1QJ9] || 148 || tilted || no || [TutorialOmpX] ||
+|| TolC || [http://www.rcsb.org/pdb/explore.do?structureId=1ek9 1EK9] || 428 || conical || yes || [TutorialTolC] ||
 || KcsA-Fab complex || [http://www.rcsb.org/pdb/explore.do?structureId=1r3j 1R3J] || 2136 || conical || no || [TutorialKcsA] ||
 
 
