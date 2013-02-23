@@ -50,9 +50,11 @@ echo "1 1" | editconf -f tolc.pdb -n 4extraction.ndx -o tolc.nowater.pdb -d 2</c
 echo 1 | pdb2gmx -f tolc.nowater.pdb -p tolc.top -i posre.tolc -o tolc.gro -ff gromos54a7</code>
 
 
+
 == Bilayer preparation ==
 
 *Download* the pre-equilibrated bilayer patch and corresponding force field parameters from the ATB website:
+<code language="bash">
 wget "http://compbio.biosci.uq.edu.au/atb/download.py?molid=1506&file=rtp_uniatom" -O popc.temp.itp
 wget "http://compbio.biosci.uq.edu.au/atb/download.py?boxid=31&file=box_gro" -O popc.gro</code>
 
@@ -86,7 +88,7 @@ A line linking to the ITP file is needed (set it below the chain ITP links):
 #include "popc.itp"</code>
 and a line of the number of lipids:
 <code language="bash">
-POPC       512</code>.
+POPC       512</code>
 
 
 
