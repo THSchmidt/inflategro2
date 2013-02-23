@@ -148,4 +148,4 @@ genion -f tolc.inwater.tpr -p tolc.top -o tolc.withions.gro</code>
 == Equilibration steps ==
 
 We recommend a short NVT run of 500 ps to solvate protein and lipid headgroups before executing a membrane equilibration (NPT, semi-isotropic) of 20 ns.
-For both equilibration steps the protein coordinates should be fixed using C-alpha position restraints of 1000 kJ mol^{-1} nm^{-2}.
+For both equilibration steps the protein coordinates should be fixed using C-alpha position restraints of 1000 kJ mol^-1^ nm^-2^.
