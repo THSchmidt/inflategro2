@@ -65,7 +65,7 @@ nstlist                  = 10
 ns_type                  = grid
 ; Periodic boundary conditions: xyz (default), no (vacuum)
 ; or full (infinite systems only)
-pbc                      = xyz
+pbc                      = no
 ; nblist cut-off
 rlist                    = 1.0
 domain-decomposition     = no
