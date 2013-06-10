@@ -63,8 +63,8 @@ set origin -0.1,-0.1
 set palette defined (1 "red", 2 "blue", 3 "green")
 set xlabel 'x_{Box}'
 set ylabel 'y_{Box}'
-set xrange [0:13]
-set yrange [0:13]
+#set xrange [0:19.5]
+#set yrange [0:19.5]
 
 set output \"$outFile\"
 #splot "$pltFile" u 1:2:3 w p notitle palette pointsize 0.00005 pointtype 5
