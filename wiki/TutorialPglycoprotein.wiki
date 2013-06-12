@@ -1,5 +1,7 @@
 #summary Tutorial for embedding the multidrug efflux factor P-glycoprotein (PDB-ID: 3G5U)
 
+= UNDER CONSTRUCTION =
+
 = Tutorial for embedding P-glycoprotein =
 
 The _E. coli_ outer membrane exit duct TolC is an essential part of antimicrobial drug resistance mechanisms since it forms a continuous channel, which allows a direct efflux of transported substrates by other proteins (e.g. AcrB) from the periplasm to the cell exterior.
