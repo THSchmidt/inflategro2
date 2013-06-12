@@ -33,8 +33,8 @@ autoflush STDOUT 1; # For direct output.
 
 
 ### Default Parameters #########################################################
-our $version        = "rc1";              # Version number.
-our $year           = "2012";             # Year (of change).
+our $version        = "rc2";              # Version number.
+our $year           = "2013";             # Year (of change).
 
 our $verbose        = 0;                  # Be loud and noisy (and global); default: silent.
 
@@ -59,11 +59,21 @@ my %refAtomNames = ('lipid'   => '^\s*P',
 
 
 
-### Internal variables #########################################################
-my $GMXLIB = qx(echo \$GMXLIB);
+### Get GROMACS path ###########################################################
+#my $GMXLIB = qx(echo \$GMXLIB);
+my $GMXLIB = qx(echo \$GMXDATA); # For GROMACS 4.5.5.
 chomp($GMXLIB);
-$GMXLIB = "/usr/share/gromacs/top" unless ($GMXLIB =~ /./);
+if ($GMXLIB =~ /./) {
+    $GMXLIB .= "/gromacs/top"
+}
+else {
+    $GMXLIB = "/usr/local/gromacs/share/gromacs/top";
+}
+################################################################################
 
+
+
+### Internal variables #########################################################
 my %coordData; # Filled by "GROFiles::readGro(...)".
 my @ndxData;   # Filled by "NDXFiles::readNdx(...)".
 my %topData;   # Filled by "TOPFiles::readTop(...)".
@@ -552,20 +562,23 @@ if ($topFile) {
 
 
 
-### Shrink the model ###########################################################
 exit if $noDeflating;
+################################################################################
+### Shrink the model ###########################################################
+################################################################################
+print "\nDeflating\n";
 
 
 ### Get the deflating factor of each group #####################################
 foreach (@inflGroupIds) {
     $groupDeflatingFactors[$_] = getDeflatingFactor($groupInflatingFactors[$_], $nDeflatingSteps);
-    print "Will use a deflating factor of " . $groupDeflatingFactors[$_] . " to shrink the lipids back in $nDeflatingSteps steps\n";
+    print "  Will use a deflating factor of " . $groupDeflatingFactors[$_] . " to shrink the lipids of group $_ back in $nDeflatingSteps steps\n";
 }
 ################################################################################
 
 
-print "Deflating\n";
 
+### Update atom lists ##########################################################
 my @newInflAtomList;
 my @newCavAtomList;
 foreach my $groupId (@inflGroupIds) {
@@ -574,9 +587,11 @@ foreach my $groupId (@inflGroupIds) {
     }
     foreach (@{$cavAtomList[$groupId]}) {
         push(@{$newCavAtomList[$groupId]}, $renumMatrix[$_]);
-        print "Will convert atom Id $_ to $renumMatrix[$_]\n";
+        print "  Will convert atom Id $_ to $renumMatrix[$_]\n";
     }
 }
+################################################################################
+
 
 
 my $shrinkOutFile = sprintf("shrink.%02d.gro", 0);
@@ -587,7 +602,7 @@ for (my $step=0; $step<$nDeflatingSteps; $step++) {
     $shrinkOutFile = sprintf("shrink.%02d.gro", $step);
     %coordData = GROFiles::readGro($shrinkOutFile); # Read input GRO file.
 
-    ### Dynamic box sice handling (multiple bilayers) ##########################
+    ### Dynamic box size handling (multiple bilayers) ##########################
     my %tmpBoxXY = ('cooX' => 0, 'cooY' => 0);
     foreach (@inflGroupIds) {
         my $boxX = $coordData{'box'}{'cooX'} * $groupDeflatingFactors[$_];
@@ -952,7 +967,8 @@ sub doEM {
     print $tmpCmd . "\n";
     `$tmpCmd 1>>log.out 2>&1`;
 
-    $tmpCmd = sprintf("mdrun -s %s -v -deffnm %s -c %s", 'tmp.tpr', 'tmp_out', $shrinkOut);
+#    $tmpCmd = sprintf("mdrun -s %s -v -deffnm %s -c %s", 'tmp.tpr', 'tmp_out', $shrinkOut);
+    $tmpCmd = sprintf("mdrun -s %s -v -deffnm %s -c %s -nt 1", 'tmp.tpr', 'tmp_out', $shrinkOut); # For GROMACS 4.5.5.
     print $tmpCmd . "\n";
     `$tmpCmd 1>>log.out 2>&1`;
 
@@ -991,7 +1007,7 @@ sub printFoot {
 Please cite:
   [1] Schmidt, T. H. & Kandt C. LAMBADA & InflateGRO2: Efficient Membrane Alignment
       and Insertion of Membrane Proteins for Molecular Dynamics Simulations.
-      J. Chem. Inf. Model. (2012).[http://dx.doi.org/10.1021/ci3000453]
+      J. Chem. Inf. Model. (2012). [http://dx.doi.org/10.1021/ci3000453]
 
 EndOfFoot
 }
