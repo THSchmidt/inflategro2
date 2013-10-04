@@ -40,12 +40,12 @@ our $verbose        = 0;                  # Be loud and noisy (and global); defa
 
 my $coordFile       = 'system.gro';       # Structure input file.
 my $topFile         = '';                 # Topology file for update.
-my $ndxInFile       = 'index.ndx';        # Input index file.
+my $ndxInFile       = '';                 # Input index file.
 my $mdpFile         = 'deflate.mdp';      # grompp input file with MD parameters.
 my $aplOutFile      = 'areaperlipid.dat'; # 'Area per lipid' output file.
 my $outFile         = 'inflated.gro';     # Structure output file.
 my $lipidFilledCav  = 0;                  # Fill up protein internal cavities with lipids (if 1).
-my $lipidResname    = '';                 # Residue name of the lipids (optional; regex).
+my $lipidResname    = '^(DL|DP|PO)P[ACEG]$'; # Residue name of the lipids (optional; regex).
 my $gridDelta       = 0.01;               # Grid size to detect the area of the protein [nm].
 my $extCavDetection = 0;                  # Switch on the extended cavity detection.
 my $suCavityDetect  = 0;                  # Cavity detection based on subunit connections.
@@ -141,14 +141,7 @@ cmdlineParser(\%cmdLParam);
 
 
 ### Read the NDX file ##########################################################
-if ($lipidResname) {
-    $inflGroupIds[0]          = 1;
-    $protGroupIds[0]          = 2;
-    $ndxData[1]{'groupName'}  = $lipidResname;
-    $ndxData[1]{'atoms'}      = getAtomIdList($coordData{'atoms'}, 'resName', $lipidResname);
-    $ndxData[2]{'atoms'}      = getAtomIdList($coordData{'atoms'}, 'resName', "([^(SOL)|($lipidResname)])");
-}
-elsif ($ndxInFile) {
+if ($ndxInFile) {
     @ndxData = NDXFiles::readNdx($ndxInFile); # Read input NDX file.
     NDXFiles::printNdxGroups(@ndxData);
 
@@ -164,6 +157,13 @@ elsif ($ndxInFile) {
             }
         }
     }
+}
+elsif ($lipidResname) {
+    $inflGroupIds[0]          = 1;
+    $protGroupIds[0]          = 2;
+    $ndxData[1]{'groupName'}  = $lipidResname;
+    $ndxData[1]{'atoms'}      = getAtomIdList($coordData{'atoms'}, 'resName', $lipidResname);
+    $ndxData[2]{'atoms'}      = getAtomIdList($coordData{'atoms'}, 'resName', "([^(SOL)]|($lipidResname))");
 }
 else {
     printHelp();
