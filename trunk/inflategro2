@@ -45,7 +45,7 @@ my $mdpFile         = 'deflate.mdp';      # grompp input file with MD parameters
 my $aplOutFile      = 'areaperlipid.dat'; # 'Area per lipid' output file.
 my $outFile         = 'inflated.gro';     # Structure output file.
 my $lipidFilledCav  = 0;                  # Fill up protein internal cavities with lipids (if 1).
-my $lipidResname    = '^(DL|DP|PO)P[ACEG]$'; # Residue name of the lipids (optional; regex).
+my $lipidResname    = '^(D|P)(I|L|O|P)P[ACEG]$'; # Residue name of the lipids (optional; regex).
 my $gridDelta       = 0.01;               # Grid size to detect the area of the protein [nm].
 my $extCavDetection = 0;                  # Switch on the extended cavity detection.
 my $suCavityDetect  = 0;                  # Cavity detection based on subunit connections.
@@ -64,7 +64,8 @@ my %refAtomNames = ('lipid'   => '^\s*P',
 my $GMXLIB = qx(echo \$GMXDATA); # For GROMACS 4.5.5.
 chomp($GMXLIB);
 if ($GMXLIB =~ /./) {
-    $GMXLIB .= "/gromacs/top"
+#    $GMXLIB .= "/gromacs/top";
+    $GMXLIB .= "/top";
 }
 else {
     $GMXLIB = "/usr/local/gromacs/share/gromacs/top";
