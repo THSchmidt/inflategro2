@@ -59,6 +59,7 @@ freezedim                = Y Y Y Y Y Y
 
 
 ; NEIGHBORSEARCHING PARAMETERS
+cutoff-scheme            = group
 ; nblist update frequency
 nstlist                  = 10
 ; ns algorithm (simple or grid)

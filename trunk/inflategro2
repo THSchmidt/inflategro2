@@ -276,7 +276,7 @@ my @resCavityList;
 my @gridSlices;
 
 foreach (@inflGroupIds) {
-    my $zSlice = 0.5; # A z-slice with a width of 0.5 nm give good results.
+    my $zSlice = 1; # A z-slice with a width of 0.5 nm give good results.
 
     for (my $zSliceMin=$lipidData[$_]{'zMin'}; $zSliceMin<=$lipidData[$_]{'zMax'}; $zSliceMin+=$zSlice) {
         ### Get the protein grid of the current z-slice ########################
@@ -556,14 +556,14 @@ if ($topFile) {
         my $tmpDir = '.';
         $tmpDir = $1 if ($topFile =~ /^(.*)\/[^\/]+$/);
         my $molType = resname2moltype($topData{'include'}, $resname, $tmpDir . "/");
-        print "Will delete " . $delResnames{$resname} . " molecules of type " . $molType . " (" . $resname . ")\n";
+        print "Will delete " . $delResnames{$resname} . " molecule(s) of type " . $molType . " (" . $resname . ")\n";
         TOPFiles::updateTop($topFile, $molType, $topData{'molecules'}{$resname} - $delResnames{$resname}) if $molType;
     }
 }
 ################################################################################
 
 
-
+exit;
 exit if $noDeflating;
 ################################################################################
 ### Shrink the model ###########################################################
@@ -1813,6 +1813,7 @@ sub getMin {
 package PTE;
 
 sub getRadius {
+    return 0.263; # For MARTINI CG systems.
     my %atomRadius = ('H'  => 0.110,
                       'He' => 0.140,
                       'Li' => 0.182,
@@ -2309,7 +2310,7 @@ sub readData {
         chomp($_);
         push(@{$$topDataRef{'include'}}, $1) if $_ =~ /^\s*#include\s+"(.+)"/;
         $molSwitch = 0 if $molSwitch && $_ =~ /^\s*\[.+\]"/;
-        $$topDataRef{'molecules'}{$1} = $2 if $molSwitch && $_ =~ /^\s*(\w+)\s+(\d+)/;
+        $$topDataRef{'molecules'}{$1} += $2 if $molSwitch && $_ =~ /^\s*(\w+)\s+(\d+)/;
         $molSwitch = 1 if $_ =~ /^\s*\[ molecules \]/;
     }
     printf("\n    Read files for inclusion: %d\n", scalar @{$$topDataRef{'include'}}) if $main::verbose;
@@ -2322,12 +2323,15 @@ sub updateTop {
     my $topFile = shift;
     my $molType = shift;
     my $molNum  = shift;
+    my $molSwitch  = 0;
+
+    my %alreadyListed;
 
     my $backupFile = main::fileBackup($topFile);
     open(BUTOPFILE, "<$backupFile") || die "ERROR: Cannot open TOP file \"$topFile\": $!\n";
     open(TOPFILE, ">$topFile") || die "ERROR: Cannot open TOP file \"$topFile\": $!\n";
     while (<BUTOPFILE>) {
-        $_ = sprintf("%-14s %6d\n", $molType, $molNum) if $_ =~ /^\s*$molType/;
+        $_ = sprintf("%-14s %6d\n", $molType, $molNum) if $_ =~ /^\s*$molType\s+/;
         print TOPFILE $_;
     }
     close(TOPFILE);
