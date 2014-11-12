@@ -556,6 +556,7 @@ if ($topFile) {
         my $tmpDir = '.';
         $tmpDir = $1 if ($topFile =~ /^(.*)\/[^\/]+$/);
         my $molType = resname2moltype($topData{'include'}, $resname, $tmpDir . "/");
+        print "Will delete " . $delResnames{$resname} . " molecules of type " . $molType . " (" . $resname . ")\n";
         TOPFiles::updateTop($topFile, $molType, $topData{'molecules'}{$resname} - $delResnames{$resname}) if $molType;
     }
 }
