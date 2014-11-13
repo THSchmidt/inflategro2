@@ -1,9 +1,6 @@
-title                    = Steepest descent energy minimization using static and dynamic groups for InflateGRO2.
-
 ; The following lines tell the program the standard locations where to find certain files
-cpp                      = cpp          ; Preprocessor
 include                  = -I../top     ;Directories to include in the topology format
-;define                   = -DPOSRES     ; Apply position restraints. 
+;define                   = -DPOSRES     ; Apply position restraints.
 
 
 
@@ -46,8 +43,7 @@ nstcheckpoint            = 25000
 nstlog                   = 2500
 nstenergy                = 2500
 ; Output frequency and precision for xtc file
-nstxtcout                = 1000
-xtc-precision            = 1000
+nstxout-compressed       = 1000
 ; This selects the subset of atoms for the xtc file. You can
 ; select multiple groups. By default all atoms will be written.
 xtc-grps                 =
@@ -69,7 +65,6 @@ ns_type                  = grid
 pbc                      = no
 ; nblist cut-off
 rlist                    = 1.0
-domain-decomposition     = no
 
 
 
@@ -100,7 +95,6 @@ pme_order                = 4
 ewald_rtol               = 1e-05
 ewald_geometry           = 3d
 epsilon_surface          = 0
-optimize_fft             = yes
 
 
 
@@ -108,8 +102,6 @@ optimize_fft             = yes
 constraints              = all-bonds
 ; Type of constraint algorithm
 constraint-algorithm     = Lincs
-; Do not constrain the start configuration
-unconstrained-start      = yes
 ; Use successive overrelaxation to reduce the number of shake iterations
 Shake-SOR                = no
 ; Relative tolerance of shake
