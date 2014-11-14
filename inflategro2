@@ -940,7 +940,7 @@ sub getOverlaps {
                 next if ($dx*$dx + $dy*$dy) > $radius2;
 
                 if ($$gridRef[$x][$y] == 2) {
-                    $$resOverlapScoreRef[$uResId] += $lipidFilledCav ? 1 : 4; # Prefer cavity lipids for deletion if there is no lipid-filled cavity.
+                    $$resOverlapScoreRef[$uResId] += $lipidFilledCav ? 1 : 80; # Prefer cavity lipids for deletion if there is no lipid-filled cavity.
                     $$resCavityScoreRef[$uResId]++;
                 }
                 else {
@@ -1812,7 +1812,7 @@ sub getMin {
 package PTE;
 
 sub getRadius {
-    return 0.18; # For MARTINI CG systems.
+    return 0.263; # For MARTINI CG systems.
     my %atomRadius = ('H'  => 0.110,
                       'He' => 0.140,
                       'Li' => 0.182,
