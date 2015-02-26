@@ -34,7 +34,7 @@ autoflush STDOUT 1; # For direct output.
 
 ### Default Parameters #########################################################
 our $version        = "rc2";              # Version number.
-our $year           = "2013";             # Year (of change).
+our $year           = "2015";             # Year (of change).
 
 our $verbose        = 0;                  # Be loud and noisy (and global); default: silent.
 
@@ -381,8 +381,8 @@ foreach (@inflGroupIds) {
 
 
     ### Delete residues ########################################################
-    $nLipidDel[$_]{'upper'} = getnLipPerArea($gridAProt[$_]{'upper'}, $coordData{'box'}, $lipidData[$_]{'leaflets'}{'upper'}{'nLipids'}) + 10; # Modified.
-    $nLipidDel[$_]{'lower'} = getnLipPerArea($gridAProt[$_]{'lower'}, $coordData{'box'}, $lipidData[$_]{'leaflets'}{'lower'}{'nLipids'}) + 10; # Modified.
+    $nLipidDel[$_]{'upper'} = getnLipPerArea($gridAProt[$_]{'upper'}, $coordData{'box'}, $lipidData[$_]{'leaflets'}{'upper'}{'nLipids'});
+    $nLipidDel[$_]{'lower'} = getnLipPerArea($gridAProt[$_]{'lower'}, $coordData{'box'}, $lipidData[$_]{'leaflets'}{'lower'}{'nLipids'});
     print "Upper leaflet: $nLipidDel[$_]{'upper'} ($gridAProt[$_]{'upper'}); Lower leaflet: $nLipidDel[$_]{'lower'} ($gridAProt[$_]{'lower'})\n";
     print "Upper leaflet: " . round($nLipidDel[$_]{'upper'}, 1) . "; Lower leaflet: " . round($nLipidDel[$_]{'lower'}, 1) . "\n";
 
@@ -1812,7 +1812,7 @@ sub getMin {
 package PTE;
 
 sub getRadius {
-    return 0.263; # For MARTINI CG systems.
+#    return 0.263; # For MARTINI CG systems.
     my %atomRadius = ('H'  => 0.110,
                       'He' => 0.140,
                       'Li' => 0.182,
