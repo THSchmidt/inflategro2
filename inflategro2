@@ -37,6 +37,7 @@ our $version        = "rc2";              # Version number.
 our $year           = "2015";             # Year (of change).
 
 our $verbose        = 0;                  # Be loud and noisy (and global); default: silent.
+our $isMartiniModel = 0;                  # MARTINI CG mode: use special radii for MARTINI particles.
 
 my $coordFile       = 'system.gro';       # Structure input file.
 my $topFile         = '';                 # Topology file for update.
@@ -123,6 +124,7 @@ my %cmdLParam = ('f'          => \$coordFile,
                  'nodefl=f'   => \$noDeflating,
                  'dsteps'     => \$nDeflatingSteps,
                  'clear=f'    => \$clearGroups,
+                 'martini=f'  => \$isMartiniModel,
                  'v=f'        => \$verbose,
                  'copyright=f'=> \&printCopyright,
                  'NOPARAM'    => \&printHelp,
@@ -500,7 +502,11 @@ foreach (@inflGroupIds) {
     }
     
     ### Recursive function for dynamic inflating ###############################
-    $groupInflatingFactors[$_] = dynInflating($gridSlices[$_], $inflAtomList[$_], $coordData{'atoms'}, \%protGeoCenter, \@resGeoCenter);
+#    $groupInflatingFactors[$_] = dynInflating($gridSlices[$_], $inflAtomList[$_], $coordData{'atoms'}, \%protGeoCenter, \@resGeoCenter); # Old variant.
+    $groupInflatingFactors[$_] = dynInflatingExt($gridSlices[$_], $inflAtomList[$_], $coordData{'atoms'}, \%protGeoCenter, \@resGeoCenter);
+#    if ($groupInflatingFactors[$_] == 20) {
+#        
+#    }
     print "Used an inflating factor of " . $groupInflatingFactors[$_] . " to solve protein - lipid overlaps\n";
     ############################################################################
 }
@@ -753,6 +759,63 @@ sub dynInflating {
 }
 
 
+# New and more efficient dynamic inflating routine in order to avoid "deep recursion" issues (refinement of the inflating factor and limitation to 10).
+sub dynInflatingExt {
+    my $gridSlicesRef    = shift;
+    my $inflAtomListRef  = shift;
+    my $coordsRef        = shift;
+    my $protGeocenterRef = shift;
+    my $resGeoCenterRef  = shift;
+    my $maxScalingFactor = shift; # Optional: param not needed for first call in main program.
+    my $level            = shift; # Optional: param not needed for first call in main program.
+
+    $maxScalingFactor = 20 unless $maxScalingFactor;
+    $level            = 0  unless $level;
+    
+#    print "--------------------------------------------\n";
+
+    my $currScalingFactor = $level ? $maxScalingFactor - (1/(10**($level-1))) : 1;
+    while ($currScalingFactor < $maxScalingFactor) {
+        $currScalingFactor += (1/(10**$level));
+
+        ### Inflate the defined lipids #########################################
+        my $scaledCoordsRef = scaleGroupXY($inflAtomListRef, $coordsRef, $currScalingFactor, $protGeocenterRef, $resGeoCenterRef);
+        ########################################################################
+
+
+        ### Check the inflated lipid atoms for protein overlaps ################
+#        print "Check for overlaps using a scaling factor $currScalingFactor\n";
+        unless (checkOverlap($gridSlicesRef, $inflAtomListRef, $scaledCoordsRef)) {
+#            print "All overlaps were solved using a scaling factor of $currScalingFactor\n";
+            return dynInflatingExt($gridSlicesRef, $inflAtomListRef, $coordsRef, $protGeocenterRef, $resGeoCenterRef, $currScalingFactor, ++$level);
+        }
+
+        if ($level == 2) { # Precision = 100 (old version is 10).
+            foreach (@{$inflAtomListRef}) {
+                $$coordsRef[$_]{'cooX'} = $$scaledCoordsRef[$_]{'cooX'};
+                $$coordsRef[$_]{'cooY'} = $$scaledCoordsRef[$_]{'cooY'};
+            }
+            return $maxScalingFactor;
+        }
+        ########################################################################
+    }
+    
+#    unless (checkOverlap($gridSlicesRef, $inflAtomListRef, $scaledCoordsRef)) {
+#        foreach (@{$inflAtomListRef}) {
+#            $$coordsRef[$_]{'cooX'} = $$scaledCoordsRef[$_]{'cooX'};
+#            $$coordsRef[$_]{'cooY'} = $$scaledCoordsRef[$_]{'cooY'};
+#        }
+#        return sprintf("%.1f", $scalingFactor);
+#    }
+
+
+
+    ### Still overlaps? Inflate again! #########################################
+#    return dynInflating($gridSlicesRef, $inflAtomListRef, $coordsRef, $protGeocenterRef, $resGeoCenterRef, $scalingFactor+0.1);
+    ############################################################################
+}
+
+
 
 sub scaleGroupXY {
     my $atomIdsRef       = shift;
@@ -794,9 +857,9 @@ sub scaleGroupXY {
 
 
 sub checkOverlap {
-    my $gridSlicesRef = shift;
-    my $atomsIdsRef   = shift;
-    my $coordsRef     = shift;
+    my $gridSlicesRef  = shift;
+    my $atomsIdsRef    = shift;
+    my $coordsRef      = shift;
 
     foreach my $zSliceStr (keys %{$gridSlicesRef}) {
         next unless $zSliceStr =~ /^([-+]?\d*\.?\d+([eE][-+]?\d+)?)-([-+]?\d*\.?\d+([eE][-+]?\d+)?)$/;
@@ -811,13 +874,14 @@ sub checkOverlap {
             next if $$coordsRef[$_]{'cooZ'} < $zSliceMin;
             next if $$coordsRef[$_]{'cooZ'} > $zSliceMax;
 
-            my $element  = substr($$coordsRef[$_]{'atomName'}, 0, 1);
-            my $radius   = PTE::getRadius($element);
-            my $radiusSq = $radius * $radius;
+            ### Get the radius #################################################
+            my $radius = $isMartiniModel ? PTE::getRadius('M') : PTE::getRadius( substr($$coordsRef[$_]{'atomName'}, 0, 1) );
+            my $radius2 = $radius * $radius;
+            ####################################################################
 
             my $tmpGridX = int($$coordsRef[$_]{'cooX'} / $gridDelta);
             my $tmpGridY = int($$coordsRef[$_]{'cooY'} / $gridDelta);
-            my $subrange = int($radiusSq / $gridDelta);
+            my $subrange = int($radius2 / $gridDelta);
 
             for (my $x=getMax($tmpGridX-$subrange, 0); $x<=getMin($tmpGridX+$subrange, $gridsizeX-1); $x++) {
                 for (my $y=getMax($tmpGridY-$subrange, 0); $y<=getMin($tmpGridY+$subrange, $gridsizeY-1); $y++) {
@@ -825,7 +889,7 @@ sub checkOverlap {
 
                     my $dx = $$coordsRef[$_]{'cooX'} - $x * $gridDelta;
                     my $dy = $$coordsRef[$_]{'cooY'} - $y * $gridDelta;
-                    next if ($dx*$dx + $dy*$dy) > $radiusSq;
+                    next if ($dx*$dx + $dy*$dy) > $radius2;
 
                     return 1 if ($$gridSlicesRef{$zSliceStr}[$x][$y]);
                 }
@@ -923,9 +987,10 @@ sub getOverlaps {
         $$resOverlapScoreRef[$uResId] = 0 unless $$resOverlapScoreRef[$uResId];
         $$resCavityScoreRef[$uResId]  = 0 unless $$resCavityScoreRef[$uResId];
 
-        my $element = substr($$coordsRef[$_]{'atomName'}, 0, 1);
-        my $radius  = PTE::getRadius($element);
+        ### Get the radius ######################################################
+        my $radius = $isMartiniModel ? PTE::getRadius('M') : PTE::getRadius( substr($$coordsRef[$_]{'atomName'}, 0, 1) );
         my $radius2 = $radius * $radius;
+        ########################################################################
 
         my $tmpGridX = int($$coordsRef[$_]{'cooX'} / $gridDelta);
         my $tmpGridY = int($$coordsRef[$_]{'cooY'} / $gridDelta);
@@ -940,7 +1005,7 @@ sub getOverlaps {
                 next if ($dx*$dx + $dy*$dy) > $radius2;
 
                 if ($$gridRef[$x][$y] == 2) {
-                    $$resOverlapScoreRef[$uResId] += $lipidFilledCav ? 1 : 80; # Prefer cavity lipids for deletion if there is no lipid-filled cavity.
+                    $$resOverlapScoreRef[$uResId] += $lipidFilledCav ? 1 : 80; # Prefer cavity lipids for deletion (if cavity should not be lipid-filled).
                     $$resCavityScoreRef[$uResId]++;
                 }
                 else {
@@ -1080,6 +1145,7 @@ printf("%-12s %-6s %-6s  %s\n", "--prefname", "string", $refAtomNames{'protein'}
 printf("%-12s %-6s %-6s  %s\n", "--lrefname", "string", $refAtomNames{'lipid'} , "Define the reference atom name of the lipids (regex)");
 printf("%-12s %-6s %-6s  %s\n", "--[no]nodefl", "bool", $noDeflating ? "yes" : "no", "Switch off the deflating after inflating");
 printf("%-12s %-6s %-6s  %s\n", "--[no]clear", "bool", $clearGroups ? "yes" : "no", "Define NDX groups for deleting atoms");
+printf("%-12s %-6s %-6s  %s\n", "--[no]martini", "bool", $isMartiniModel ? "yes" : "no", "Switch to MARTINI mode (special particle radius of 0.263 nm)");
 printf("%-12s %-6s %-6s  %s\n", "-[no]copyright", "bool", "no", "Print copyright information");
 print ("\n");
 
@@ -1517,14 +1583,14 @@ sub iniGrid {
 
 
 sub protein2Grid {
-    my $gridRef     = shift;
-    my $gridsizeX   = shift;
-    my $gridsizeY   = shift;
-    my $gridDelta   = shift;
-    my $atomsIdsRef = shift;
-    my $coordsRef   = shift;
-    my $zMin        = shift;
-    my $zMax        = shift;
+    my $gridRef        = shift;
+    my $gridsizeX      = shift;
+    my $gridsizeY      = shift;
+    my $gridDelta      = shift;
+    my $atomsIdsRef    = shift;
+    my $coordsRef      = shift;
+    my $zMin           = shift;
+    my $zMax           = shift;
 
     my $nAreas      = 0;
     my $gridDelta2  = $gridDelta*$gridDelta;
@@ -1534,11 +1600,12 @@ sub protein2Grid {
         next unless $$coordsRef[$_]{'cooZ'};
         next if $$coordsRef[$_]{'cooZ'} > $zMax;
         next if $$coordsRef[$_]{'cooZ'} < $zMin;
-        printf("      Mapping atoms to the grid: %d%% (protein area %.4f nm^2)\r", (++$$coordsRef[$_]{'atomNum'})/scalar(@{$atomsIdsRef})*100, $nAreas*$gridDelta*$gridDelta) if $main::verbose;
+        printf("      Mapping atoms to the grid: %d%% (protein area %.4f nm^2)\r", (++$$coordsRef[$_]{'atomNum'})/scalar(@{$atomsIdsRef})*100, $nAreas*$gridDelta2) if $main::verbose;
 
-        my $element = substr($$coordsRef[$_]{'atomName'}, 0, 1);
-        my $radius  = PTE::getRadius($element);
+        ### Get the radius ######################################################
+        my $radius = $isMartiniModel ? PTE::getRadius('M') : PTE::getRadius( substr($$coordsRef[$_]{'atomName'}, 0, 1) );
         my $radius2 = $radius * $radius;
+        ########################################################################
 
         my $tmpGridX = int($$coordsRef[$_]{'cooX'} / $gridDelta);
         my $tmpGridY = int($$coordsRef[$_]{'cooY'} / $gridDelta);
@@ -1812,7 +1879,6 @@ sub getMin {
 package PTE;
 
 sub getRadius {
-#    return 0.263; # For MARTINI CG systems.
     my %atomRadius = ('H'  => 0.110,
                       'He' => 0.140,
                       'Li' => 0.182,
@@ -1866,7 +1932,8 @@ sub getRadius {
                       'Rn' => 0.220,
                       'Fr' => 0.348,
                       'Ra' => 0.283,
-                      'U'  => 0.186);
+                      'U'  => 0.186,
+                      'M'  => 0.263); # Special radius for MARTINI CG particles.
 
     return $atomRadius{$_[0]} if $atomRadius{$_[0]};
     return 0;
@@ -2042,7 +2109,7 @@ sub writeFooter {
     my $fileHandle = shift;
     my $groDataRef = shift;
 
-    printf($fileHandle "  %8.3f  %8.3f  %8.3f\n", $$groDataRef{'box'}{'cooX'}, $$groDataRef{'box'}{'cooY'}, $$groDataRef{'box'}{'cooZ'});
+    printf($fileHandle "  %s  %s  %s\n", sprintf("%8.3f", $$groDataRef{'box'}{'cooX'}), sprintf("%8.3f", $$groDataRef{'box'}{'cooY'}), sprintf("%8.3f", $$groDataRef{'box'}{'cooZ'}));
 }
 ################################################################################
 
