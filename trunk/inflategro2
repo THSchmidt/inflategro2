@@ -502,11 +502,12 @@ foreach (@inflGroupIds) {
     }
     
     ### Recursive function for dynamic inflating ###############################
-#    $groupInflatingFactors[$_] = dynInflating($gridSlices[$_], $inflAtomList[$_], $coordData{'atoms'}, \%protGeoCenter, \@resGeoCenter); # Old variant.
-    $groupInflatingFactors[$_] = dynInflatingExt($gridSlices[$_], $inflAtomList[$_], $coordData{'atoms'}, \%protGeoCenter, \@resGeoCenter);
-#    if ($groupInflatingFactors[$_] == 20) {
-#        
-#    }
+    $groupInflatingFactors[$_] = dynInflating($gridSlices[$_], $inflAtomList[$_], $coordData{'atoms'}, \%protGeoCenter, \@resGeoCenter); # Old variant.
+#    $groupInflatingFactors[$_] = dynInflatingExt($gridSlices[$_], $inflAtomList[$_], $coordData{'atoms'}, \%protGeoCenter, \@resGeoCenter);
+    if ($groupInflatingFactors[$_] >= 20) {
+        print "The inflating factor to solve protein - lipid overlaps is too high (" . $groupInflatingFactors[$_] . "). This might indicate that something has gone wrong.\n";
+#        exit;
+    }
     print "Used an inflating factor of " . $groupInflatingFactors[$_] . " to solve protein - lipid overlaps\n";
     ############################################################################
 }
@@ -759,6 +760,7 @@ sub dynInflating {
 }
 
 
+
 # New and more efficient dynamic inflating routine in order to avoid "deep recursion" issues (refinement of the inflating factor and limitation to 10).
 sub dynInflatingExt {
     my $gridSlicesRef    = shift;
@@ -771,8 +773,6 @@ sub dynInflatingExt {
 
     $maxScalingFactor = 20 unless $maxScalingFactor;
     $level            = 0  unless $level;
-    
-#    print "--------------------------------------------\n";
 
     my $currScalingFactor = $level ? $maxScalingFactor - (1/(10**($level-1))) : 1;
     while ($currScalingFactor < $maxScalingFactor) {
@@ -784,9 +784,8 @@ sub dynInflatingExt {
 
 
         ### Check the inflated lipid atoms for protein overlaps ################
-#        print "Check for overlaps using a scaling factor $currScalingFactor\n";
+#        print "Check for overlaps using a scaling factor $currScalingFactor ($level)\n";
         unless (checkOverlap($gridSlicesRef, $inflAtomListRef, $scaledCoordsRef)) {
-#            print "All overlaps were solved using a scaling factor of $currScalingFactor\n";
             return dynInflatingExt($gridSlicesRef, $inflAtomListRef, $coordsRef, $protGeocenterRef, $resGeoCenterRef, $currScalingFactor, ++$level);
         }
 
@@ -799,20 +798,8 @@ sub dynInflatingExt {
         }
         ########################################################################
     }
-    
-#    unless (checkOverlap($gridSlicesRef, $inflAtomListRef, $scaledCoordsRef)) {
-#        foreach (@{$inflAtomListRef}) {
-#            $$coordsRef[$_]{'cooX'} = $$scaledCoordsRef[$_]{'cooX'};
-#            $$coordsRef[$_]{'cooY'} = $$scaledCoordsRef[$_]{'cooY'};
-#        }
-#        return sprintf("%.1f", $scalingFactor);
-#    }
 
-
-
-    ### Still overlaps? Inflate again! #########################################
-#    return dynInflating($gridSlicesRef, $inflAtomListRef, $coordsRef, $protGeocenterRef, $resGeoCenterRef, $scalingFactor+0.1);
-    ############################################################################
+    return $maxScalingFactor;
 }
 
 
