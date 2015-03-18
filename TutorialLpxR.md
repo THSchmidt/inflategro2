@@ -1,0 +1,46 @@
+# Tutorial for embedding LpxR #
+**NOTE:** _We use GROMACS 4.5.5 for this tutorial._
+
+
+## Protein preparation ##
+
+Download the protein structure:
+```bash
+wget "http://www.pdb.org/pdb/download/downloadFile.do?fileFormat=pdb&compression=NO&structureId=1bl8" -O 1bl8.pdb```
+
+Remove water, potassium ions and the CONECT section using your preferred editor:
+```bash
+gedit 1bl8.pdb```
+
+Transfer the structure to the world of GROMACS:
+```bash
+echo 1 | pdb2gmx -f 1bl8.pdb -o 1bl8.gro -ff gromos53a6 -p kcsa.top -i posre.kcsa```
+
+touch empty.mdp
+grompp -f empty.mdp -c 1bl8.gro -p kcsa.top -o test.tpr
+
+editconf -f 1bl8.gro -o protein.gro -d 2
+echo q | make\_ndx -f protein.gro -o protein.ndx
+
+~/lib/lambada/lambada\_beta3/lambada --iprot protein.gro --ipndx protein.ndx --imemb pope-popc.17x17.gro --imndx pope-popc.17x17.ndx --ogro protein\_pope-popc.gro --orient
+
+
+
+# Remove water molecules.
+gedit delwater.make\_ndx.answers
+make\_ndx -f ../pope-popc/pope-popc.17x17.gro -o pope-popc.17x17.withwater.ndx <delwater.make\_ndx.answers
+echo 7 | editconf -f ../pope-popc/pope-popc.17x17.gro -n pope-popc.17x17.ndx -o pope-popc.17x17.gro
+echo q | make\_ndx -f pope-popc.17x17.gro -o pope-popc.17x17.ndx
+
+
+cp ../pope-popc/**.itp .
+gedit kcsa.top
+cp ~/lib/inflategro/inflategro2b9/deflate.mdp .
+# Combine for InflateGRO2 both lipid types to one group (14 | 15).
+gedit make\_ndx.answers
+make\_ndx -f protein\_pope-popc.gro -o protein\_pope-popc.ndx <make\_ndx.answers
+cp ~/lib/inflategro/inflategro2b9/deflate.mdp .**
+
+# Before executing InflateGRO2 with its internal defalting routine, you should check if your topology is compatible with coordinates, by using grompp.
+
+~/lib/inflategro/inflategro2b9/inflategro2 -f protein\_pope-popc.gro -n protein\_pope-popc.ndx -p kcsa.top -m deflate.mdp -v
